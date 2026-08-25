@@ -93,11 +93,18 @@ jobs:
           else
             cargo build --release --features cli --target ${{ matrix.target }}
           fi
+      - name: Stage resource-named binary
+        shell: bash
+        run: |
+          mkdir -p staged
+          cp "target/${{ matrix.target }}/release/ogsql${{ matrix.suffix }}" \
+            "staged/${{ matrix.resource }}"
+          ls -la staged/
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.resource }}
-          path: target/${{ matrix.target }}/release/ogsql${{ matrix.suffix }}
+          path: staged/${{ matrix.resource }}
 
   # ── 2. Connector test suite against a freshly built local binary ──
   java-test:
@@ -134,6 +141,9 @@ jobs:
           merge-multiple: true
       - name: Copy platform binaries into resources
         run: |
+          echo "=== native-binaries layout ==="
+          find native-binaries -maxdepth 3 -type f -print | sort || true
+          ls -la native-binaries || true
           mkdir -p java-connector/src/main/resources
           missing=0
           for f in ogsql_linux_amd64 ogsql_linux_arm64 ogsql_osx_amd64 ogsql_osx_arm64 ogsql_windows_amd64.exe; do
@@ -223,6 +233,8 @@ jobs:
           merge-multiple: true
       - name: Copy platform binaries into resources
         run: |
+          echo "=== native-binaries layout ==="
+          find native-binaries -maxdepth 3 -type f -print | sort || true
           mkdir -p java-connector/src/main/resources
           missing=0
           for f in ogsql_linux_amd64 ogsql_linux_arm64 ogsql_osx_amd64 ogsql_osx_arm64 ogsql_windows_amd64.exe; do
@@ -289,6 +301,8 @@ jobs:
           merge-multiple: true
       - name: Copy platform binaries into resources
         run: |
+          echo "=== native-binaries layout ==="
+          find native-binaries -maxdepth 3 -type f -print | sort || true
           mkdir -p java-connector/src/main/resources
           missing=0
           for f in ogsql_linux_amd64 ogsql_linux_arm64 ogsql_osx_amd64 ogsql_osx_arm64 ogsql_windows_amd64.exe; do
