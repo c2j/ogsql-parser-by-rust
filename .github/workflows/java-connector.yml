@@ -282,7 +282,19 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Deploy
-        run: mvn -B -f java-connector/pom.xml -Pgithub deploy -DskipTests
+        run: |
+          set +e
+          mvn -B -f java-connector/pom.xml -Pgithub deploy -DskipTests | tee /tmp/github-deploy.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          if grep -q 'status code: 409' /tmp/github-deploy.log; then
+            echo "GitHub Packages already has this non-SNAPSHOT version; leaving it in place."
+            exit 0
+          fi
+          exit "$status"
 
   # ── 4b. Maven Central (manual only) ──
   # Secrets: SONATYPE_USERNAME / SONATYPE_PASSWORD, GPG_PRIVATE_KEY,
