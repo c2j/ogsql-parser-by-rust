@@ -74,5 +74,9 @@ mvn -f java-connector/pom.xml test -Dogsql.lib.path=/path/to/ogsql
 
 ## 发布
 
-Maven Central（Central Portal，`central.sonatype.com`，详见 java-developer-guide.md §3）；
-Maven Central 作为后续里程碑。
+**GitHub Packages 常驻**（`maven.pkg.github.com/c2j/ogsql-parser`，每个 `v*` tag 与手动 `deploy_github`）；
+**Maven Central** 为额外公开通道（手动 `deploy_central`）。详见 [java-developer-guide.md](./java-developer-guide.md) §3。
+
+本地 `mvn -f java-connector/pom.xml package` 产出的是 **thin** jar（~20KB，不含 `ogsql_*`），**不能**当作可独立 parse 的发布物。只有 CI 断言过的 fat jar（≥1MB，内嵌五平台二进制）才是发布坐标。
+
+`-Dogsql.lib.path` 是可选覆盖，不是默认前提。连接器没有 `OGSQL_BIN` 环境变量。
