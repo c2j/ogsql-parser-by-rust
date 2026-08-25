@@ -119,37 +119,54 @@
           </execution>
         </executions>
       </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-gpg-plugin</artifactId>
-        <version>3.2.7</version>
-        <executions>
-          <execution>
-            <id>sign-artifacts</id>
-            <phase>verify</phase>
-            <goals>
-              <goal>sign</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
-        <groupId>org.sonatype.central</groupId>
-        <artifactId>central-publishing-maven-plugin</artifactId>
-        <version>0.9.0</version>
-        <extensions>true</extensions>
-        <configuration>
-          <publishingServerId>central</publishingServerId>
-          <autoPublish>true</autoPublish>
-        </configuration>
-      </plugin>
     </plugins>
   </build>
 
-  <!-- ── Maven Central (Central Portal) publishing ──────────────
-       `mvn deploy` uploads a signed bundle (jar + sources + javadoc) to
-       central.sonatype.com via the central-publishing-maven-plugin, using the
-       User Token credentials from ~/.m2/settings.xml (server id `central`).
-       Prerequisites (one-time): register the io.github.c2j namespace and generate
-       a PGP key published to a keyserver. See docs/java-developer-guide.md. -->
+  <!-- Two publish channels, isolated so `mvn deploy` cannot double-write.
+       -Pgithub  → GitHub Packages (no GPG; SNAPSHOT + tagged releases).
+       -Pcentral → Maven Central Portal (GPG + central-publishing plugin).
+       Default (no profile) is local package/test only. -->
+  <profiles>
+    <profile>
+      <id>github</id>
+      <distributionManagement>
+        <repository>
+          <id>github</id>
+          <name>GitHub Packages</name>
+          <url>https://maven.pkg.github.com/c2j/ogsql-parser</url>
+        </repository>
+      </distributionManagement>
+    </profile>
+    <profile>
+      <id>central</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>3.2.7</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>0.9.0</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>true</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
