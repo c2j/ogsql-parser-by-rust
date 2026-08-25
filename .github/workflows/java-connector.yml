@@ -177,6 +177,10 @@ jobs:
             exit 1
           fi
           bash java-connector/scripts/assert-fat-jar.sh "${fat[0]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ogsql-parser-java-jar
+          path: java-connector/target/ogsql-parser-java-*.jar
       - name: Smoke parse without external binary (linux-amd64)
         run: |
           FAT=""
@@ -202,12 +206,12 @@ jobs:
             }
           }
           EOF
-          javac --release 11 -cp "$FAT" /tmp/FatSmoke.java -d /tmp
-          java -cp "/tmp:$FAT:/tmp/ogsql-rt/*" FatSmoke
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ogsql-parser-java-jar
-          path: java-connector/target/ogsql-parser-java-*.jar
+          CP="$FAT"
+          for j in /tmp/ogsql-rt/*.jar; do
+            CP="$CP:$j"
+          done
+          javac --release 11 -cp "$CP" /tmp/FatSmoke.java -d /tmp
+          java -cp "/tmp:$CP" FatSmoke
 
   # ── 4a. GitHub Packages (required channel: tags + manual) ──
   java-deploy-github:
