@@ -89,11 +89,53 @@ try (Ogsql ogsql = Ogsql.newInstance()) {
 
 ## 3. Maven 依赖与发布渠道
 
-| 渠道 | 说明 |
-|---|---|
-| **Maven Central** | 发布渠道：`central.sonatype.com`（Central Portal）。`mvn deploy` 经 `central-publishing-maven-plugin` 上传签名 bundle（jar + sources + javadoc），校验通过后自动发布到 Maven Central，全球可拉取 |
+| 渠道 | 何时用 | 怎么消费 |
+|---|---|---|
+| **GitHub Packages**（常驻） | SNAPSHOT、内部、fastaas vendor、每个 `v*` tag | `https://maven.pkg.github.com/c2j/ogsql-parser` + `settings.xml` server `github`（`packages:read`） |
+| **Maven Central**（额外公开通道） | 公开坐标，手动 `deploy_central`（凭据齐了之后） | 普通 Maven Central，无需额外 `<repository>` |
 
-消费方式（发布后）：
+**推荐**：Central 一旦发布，公开项目用 Central。在此之前以及内部/SNAPSHOT，用 Packages。
+
+`-Dogsql.lib.path` 是可选覆盖（热替换 / 调试），**不是**默认前提。连接器没有 `OGSQL_BIN` 环境变量——那是下游包装层，不是本模块 API。
+
+本地 `mvn -f java-connector/pom.xml package` 产出 **thin** jar（~20KB，不含 `ogsql_*`），**禁止** vendor / 当作可独立 parse 的发布物。只有 CI 断言过的 fat jar（≥1MB，内嵌五平台 `ogsql_*`）才是发布坐标。
+
+### 3.1 从 GitHub Packages 消费
+
+`~/.m2/settings.xml`：
+
+```xml
+<settings>
+  <servers>
+    <server>
+      <id>github</id>
+      <username>YOUR_GITHUB_USERNAME</username>
+      <password>YOUR_GITHUB_TOKEN</password>
+    </server>
+  </servers>
+</settings>
+```
+
+工程 POM：
+
+```xml
+<repositories>
+  <repository>
+    <id>github</id>
+    <url>https://maven.pkg.github.com/c2j/ogsql-parser</url>
+  </repository>
+</repositories>
+
+<dependency>
+  <groupId>io.github.c2j</groupId>
+  <artifactId>ogsql-parser-java</artifactId>
+  <version>0.10.0</version>
+</dependency>
+```
+
+Token 需要 `packages:read`。
+
+### 3.2 从 Maven Central 消费（公开后）
 
 ```xml
 <dependency>
@@ -103,29 +145,20 @@ try (Ogsql ogsql = Ogsql.newInstance()) {
 </dependency>
 ```
 
-### 3.1 首次发布的一次性准备工作（手动）
+### 3.3 Central 首次发布的一次性准备工作（手动）
 
 1. **注册账号**：访问 [central.sonatype.com](https://central.sonatype.com)，用 GitHub 账号登录。
-2. **验证命名空间** `io.github.c2j`：Portal → Namespaces → 按提示验证归属（`io.github.*` 命名空间可关联 GitHub 账号验证，或用 DNS TXT 记录：在 `c2j.github.io` 下添加指定 TXT 记录）。
-3. **生成 PGP 密钥**（用于签名，任选其一）：
-   ```bash
-   gpg --full-generate-key        # RSA 4096 或 Ed25519，邮箱用 chenjj.yz@gmail.com
-   gpg --keyserver keyserver.ubuntu.com --send-keys <KEY_ID>   # 发布公钥
-   ```
-4. **生成 User Token**：Portal → User Tokens → Generate（得到 username/password 一对凭据）。
-5. **在仓库配置 Secrets**（Settings → Secrets and variables → Actions）：
-   | Secret | 值 |
-   |---|---|
-   | `SONATYPE_USERNAME` / `SONATYPE_PASSWORD` | User Token 的 username/password |
-   | `GPG_PRIVATE_KEY` | 私钥（`gpg --armor --export-secret-keys <KEY_ID> | base64`） |
-   | `GPG_PASSPHRASE` | 私钥口令 |
-   | `GPG_KEY_ID` | 公钥指纹（`gpg --list-secret-keys` 的输出） |
+2. **验证命名空间** `io.github.c2j`：Portal → Namespaces → 按提示验证归属。
+3. **生成 PGP 密钥**并发布到 keyserver。
+4. **生成 User Token**：Portal → User Tokens → Generate。
+5. **仓库 Secrets**：`SONATYPE_USERNAME` / `SONATYPE_PASSWORD`、`GPG_PRIVATE_KEY`、`GPG_PASSPHRASE`、`GPG_KEY_ID`。
 
-### 3.2 发布流程（CI 自动）
+### 3.4 发布流程（CI）
 
-手动触发 `Java Connector` 工作流的 `workflow_dispatch` 并勾选 `deploy`（自动先构建 5 平台二进制打进 jar，再签名上传 Central Portal；`autoPublish=true`，校验通过即自动发布，通常 15–60 分钟生效）。
+- **GitHub Packages**：推送 `v*` tag，或 `workflow_dispatch` 勾选 `deploy_github`。CI 组装 fat jar、断言五平台资源后 `mvn -Pgithub deploy`。
+- **Maven Central**：`workflow_dispatch` 勾选 `deploy_central`（需 §3.3 Secrets）。`mvn -Pcentral deploy` 签名后上传 Portal。
 
-> 发布要求（pom 已满足）：非 SNAPSHOT 版本、POM 含 licenses/developers/scm、sources + javadoc jar、所有产物 GPG 签名、公钥已发布到 keyserver。
+> Central 要求（pom `-Pcentral` 已满足）：非 SNAPSHOT、licenses/developers/scm、sources + javadoc、GPG 签名。Packages 不需要 GPG。
 
 ## 4. 平台与二进制（DuckDB 式加载）
 

@@ -11,7 +11,7 @@
 | M1 serve-stdio 子命令 + 协议文档 + Rust 测试（18 tests） | ✅ 完成（fmt / clippy --all-features / cargo test --all-features 全绿） |
 | M2 Java 骨架：平台命名/解压/spawn/hello/五 op 门面 + JUnit（16 tests） | ✅ 完成（含崩溃自愈、TOO_DEEP、并发串行测试） |
 | M3 健壮性打磨（核心项已在 M2 内置：EOF 重启、超时、shutdown hook） | ✅ 完成（stderr 转发 java.util.logging、重启上限语义、2,000 次压力测试 ≈0.37ms/次） |
-| M4 CI 平台矩阵 + Maven 打包 + 冒烟 | ✅ 完成（.github/workflows/java-connector.yml：5 平台二进制 + 连接器测试 + 胖 jar 组装；deploy job 已切换为 Maven Central，YAML 已验证，待 GH 实跑） |
+| M4 CI 平台矩阵 + Maven 打包 + 冒烟 | 🔧 进行中（osx-amd64 改 macos-14；fat-jar 断言 + linux 零外部依赖冒烟；`-Pgithub` 恢复 Packages，`-Pcentral` 隔离 Central；待 GH 实跑打出可消费 fat jar） |
 | M5（可选）win7 artifacts、parse_xml/parse_java op、批量 op、基准 | 🔲 按需（Win7 构建路径已在 release.yml 存在，接入 classifier 即可） |
 
 
