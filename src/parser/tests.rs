@@ -8579,6 +8579,51 @@ fn test_create_synonym() {
 }
 
 #[test]
+fn test_create_aggregate_qualified_name() {
+    let sql = "CREATE AGGREGATE public.group_concat(text) (\n    SFUNC = public._group_concat,\n    STYPE = text\n);";
+    let tokens = Tokenizer::new(sql).tokenize().unwrap();
+    let mut parser = Parser::new(tokens);
+    let statements = parser.parse();
+    let stmt = statements.into_iter().next().expect("expected CREATE AGGREGATE statement");
+
+    match stmt {
+        Statement::CreateAggregate(s) => {
+            assert_eq!(s.name, "public.group_concat");
+            assert!(s.options.contains(&("SFUNC".to_string(), "public._group_concat".to_string())));
+        }
+        other => panic!("expected CreateAggregate, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_create_aggregate_unqualified() {
+    let sql = "CREATE AGGREGATE group_concat(text) (SFUNC = _group_concat, STYPE = text);";
+    let tokens = Tokenizer::new(sql).tokenize().unwrap();
+    let mut parser = Parser::new(tokens);
+    let statements = parser.parse();
+    let stmt = statements.into_iter().next().expect("expected CREATE AGGREGATE statement");
+
+    match stmt {
+        Statement::CreateAggregate(s) => assert_eq!(s.name, "group_concat"),
+        other => panic!("expected CreateAggregate, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_create_aggregate_quoted_name() {
+    let sql = "CREATE AGGREGATE \"MyAgg\"(text) (SFUNC = _group_concat, STYPE = text);";
+    let tokens = Tokenizer::new(sql).tokenize().unwrap();
+    let mut parser = Parser::new(tokens);
+    let statements = parser.parse();
+    let stmt = statements.into_iter().next().expect("expected CREATE AGGREGATE statement");
+
+    match stmt {
+        Statement::CreateAggregate(s) => assert_eq!(s.name, "MyAgg"),
+        other => panic!("expected CreateAggregate, got {:?}", other),
+    }
+}
+
+#[test]
 fn test_create_model() {
     let stmt = parse_one("CREATE MODEL mymodel USING linear FEATURES (col1, col2) TARGET col3 FROM mytable");
     match stmt {

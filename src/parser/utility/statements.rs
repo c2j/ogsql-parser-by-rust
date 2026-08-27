@@ -1767,7 +1767,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_create_aggregate(&mut self) -> Result<CreateAggregateStatement, ParserError> {
-        let name = self.consume_any_identifier()?;
+        let name = self.parse_object_name()?.join(".");
         let base_types = if self.match_token(&Token::LParen) {
             self.advance();
             if self.match_token(&Token::RParen) {
