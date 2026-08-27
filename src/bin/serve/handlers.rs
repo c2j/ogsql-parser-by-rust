@@ -78,7 +78,7 @@ pub async fn handle_parse(Json(input): Json<ParseInput>) -> Result<Json<ParseRes
                         Err(e) => {
                             obj.as_object_mut()
                                 .unwrap_or(&mut serde_json::Map::new())
-                                .insert("schema_resolution_error".to_string(), serde_json::json!(format!("{}", e)));
+                                .insert("schema_resolution_error".to_string(), serde_json::json!(e.to_string()));
                         }
                     }
                 }

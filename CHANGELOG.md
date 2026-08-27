@@ -2,6 +2,19 @@
 
 All notable changes to ogsql-parser will be documented in this file.
 
+## [0.10.1]
+
+### Fixed
+- Parse `INSERT ... ON DUPLICATE KEY UPDATE NOTHING` — the openGauss Oracle-compat
+  "do nothing on conflict" upsert form. `OnDuplicateKeyUpdate` is now an enum with
+  `Nothing` / `Update { assignments, where_clause }` variants (mirroring
+  `ConflictAction`); the formatter and JSON round-trip cover both forms (#328).
+- Accept schema-qualified aggregate names in `CREATE AGGREGATE schema.name(...)`
+  — the name is now parsed as a qualified object name (e.g. `public.group_concat`),
+  matching the `parse_object_name` convention used by other CREATE parsers. Unquoted
+  and quoted identifiers are stored as raw values, consistent with the rest of the
+  codebase (#329).
+
 ## [0.10.0]
 
 ### Added

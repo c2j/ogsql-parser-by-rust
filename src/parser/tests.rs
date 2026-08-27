@@ -7055,7 +7055,11 @@ fn test_on_duplicate_key_update() {
     match stmt {
         Statement::Insert(ins) => {
             let dk = ins.node.on_duplicate_key.expect("expected on_duplicate_key");
-            assert_eq!(dk.assignments.len(), 1);
+            let assignments = match &dk {
+                OnDuplicateKeyUpdate::Update { assignments, .. } => assignments,
+                _ => panic!("expected on_duplicate_key update"),
+            };
+            assert_eq!(assignments.len(), 1);
         }
         _ => panic!("expected Insert"),
     }
@@ -7067,10 +7071,29 @@ fn test_on_duplicate_key_update_multiple() {
     match stmt {
         Statement::Insert(ins) => {
             let dk = ins.node.on_duplicate_key.expect("expected on_duplicate_key");
-            assert_eq!(dk.assignments.len(), 2);
+            let assignments = match &dk {
+                OnDuplicateKeyUpdate::Update { assignments, .. } => assignments,
+                _ => panic!("expected on_duplicate_key update"),
+            };
+            assert_eq!(assignments.len(), 2);
         }
         _ => panic!("expected Insert"),
     }
+}
+
+#[test]
+fn test_on_duplicate_key_update_nothing() {
+    let stmt = parse_one("INSERT INTO t(a,b) VALUES (1,2) ON DUPLICATE KEY UPDATE NOTHING;");
+    match &stmt {
+        Statement::Insert(ins) => {
+            assert!(matches!(ins.node.on_duplicate_key, Some(OnDuplicateKeyUpdate::Nothing)));
+        }
+        _ => panic!("expected Insert"),
+    }
+    let formatted = SqlFormatter::new().format_statement(&stmt);
+    assert_eq!(formatted, "INSERT INTO t (a, b) VALUES (1, 2) ON DUPLICATE KEY UPDATE NOTHING");
+    let reparsed = parse_one(&formatted);
+    assert_eq_ignoring_span(&stmt, &reparsed);
 }
 
 // ── Reserved / Non-reserved keyword as identifier tests ──
@@ -8552,6 +8575,51 @@ fn test_create_synonym() {
             assert!(s.public);
         }
         other => panic!("expected CreateSynonym, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_create_aggregate_qualified_name() {
+    let sql = "CREATE AGGREGATE public.group_concat(text) (\n    SFUNC = public._group_concat,\n    STYPE = text\n);";
+    let tokens = Tokenizer::new(sql).tokenize().unwrap();
+    let mut parser = Parser::new(tokens);
+    let statements = parser.parse();
+    let stmt = statements.into_iter().next().expect("expected CREATE AGGREGATE statement");
+
+    match stmt {
+        Statement::CreateAggregate(s) => {
+            assert_eq!(s.name, "public.group_concat");
+            assert!(s.options.contains(&("SFUNC".to_string(), "public._group_concat".to_string())));
+        }
+        other => panic!("expected CreateAggregate, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_create_aggregate_unqualified() {
+    let sql = "CREATE AGGREGATE group_concat(text) (SFUNC = _group_concat, STYPE = text);";
+    let tokens = Tokenizer::new(sql).tokenize().unwrap();
+    let mut parser = Parser::new(tokens);
+    let statements = parser.parse();
+    let stmt = statements.into_iter().next().expect("expected CREATE AGGREGATE statement");
+
+    match stmt {
+        Statement::CreateAggregate(s) => assert_eq!(s.name, "group_concat"),
+        other => panic!("expected CreateAggregate, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_create_aggregate_quoted_name() {
+    let sql = "CREATE AGGREGATE \"MyAgg\"(text) (SFUNC = _group_concat, STYPE = text);";
+    let tokens = Tokenizer::new(sql).tokenize().unwrap();
+    let mut parser = Parser::new(tokens);
+    let statements = parser.parse();
+    let stmt = statements.into_iter().next().expect("expected CREATE AGGREGATE statement");
+
+    match stmt {
+        Statement::CreateAggregate(s) => assert_eq!(s.name, "MyAgg"),
+        other => panic!("expected CreateAggregate, got {:?}", other),
     }
 }
 

@@ -1948,18 +1948,27 @@ impl SqlFormatter {
         }
 
         if let Some(ref dup_key) = stmt.on_duplicate_key {
-            let mut dup_parts = vec![self.kw("ON"), self.kw("DUPLICATE"), self.kw("KEY"), self.kw("UPDATE")];
-            let assign_strs: Vec<String> = dup_key
-                .assignments
-                .iter()
-                .map(|a| format!("{} = {}", self.format_object_name(&a.columns[0]), self.format_expr(&a.value)))
-                .collect();
-            dup_parts.push(assign_strs.join(", "));
-            if let Some(w) = &dup_key.where_clause {
-                dup_parts.push(self.kw("WHERE"));
-                dup_parts.push(self.format_expr(w));
+            match dup_key {
+                OnDuplicateKeyUpdate::Nothing => {
+                    parts.push(
+                        [self.kw("ON"), self.kw("DUPLICATE"), self.kw("KEY"), self.kw("UPDATE"), self.kw("NOTHING")]
+                            .join(" "),
+                    );
+                }
+                OnDuplicateKeyUpdate::Update { assignments, where_clause } => {
+                    let mut dup_parts = vec![self.kw("ON"), self.kw("DUPLICATE"), self.kw("KEY"), self.kw("UPDATE")];
+                    let assign_strs: Vec<String> = assignments
+                        .iter()
+                        .map(|a| format!("{} = {}", self.format_object_name(&a.columns[0]), self.format_expr(&a.value)))
+                        .collect();
+                    dup_parts.push(assign_strs.join(", "));
+                    if let Some(w) = where_clause {
+                        dup_parts.push(self.kw("WHERE"));
+                        dup_parts.push(self.format_expr(w));
+                    }
+                    parts.push(dup_parts.join(" "));
+                }
             }
-            parts.push(dup_parts.join(" "));
         }
 
         if let Some(ref on_conflict) = stmt.on_conflict {

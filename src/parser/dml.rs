@@ -161,24 +161,28 @@ impl Parser {
                 self.advance();
                 self.expect_keyword(Keyword::KEY)?;
                 self.expect_keyword(Keyword::UPDATE)?;
-                let mut assignments = Vec::new();
-                loop {
-                    let column = self.parse_object_name()?;
-                    self.expect_token(&Token::Eq)?;
-                    let value = self.parse_expr()?;
-                    assignments.push(UpdateAssignment { columns: vec![column], value });
-                    if !self.match_token(&Token::Comma) {
-                        break;
-                    }
-                    self.advance();
-                }
-                let where_clause = if self.match_keyword(Keyword::WHERE) {
-                    self.advance();
-                    Some(self.parse_expr()?)
+                if self.try_consume_keyword(Keyword::NOTHING) {
+                    Some(OnDuplicateKeyUpdate::Nothing)
                 } else {
-                    None
-                };
-                Some(OnDuplicateKeyUpdate { assignments, where_clause })
+                    let mut assignments = Vec::new();
+                    loop {
+                        let column = self.parse_object_name()?;
+                        self.expect_token(&Token::Eq)?;
+                        let value = self.parse_expr()?;
+                        assignments.push(UpdateAssignment { columns: vec![column], value });
+                        if !self.match_token(&Token::Comma) {
+                            break;
+                        }
+                        self.advance();
+                    }
+                    let where_clause = if self.match_keyword(Keyword::WHERE) {
+                        self.advance();
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    Some(OnDuplicateKeyUpdate::Update { assignments, where_clause })
+                }
             } else if self.match_keyword(Keyword::CONFLICT) {
                 return Err(ParserError::UnsupportedSyntax {
                     location: self.current_location(),

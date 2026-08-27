@@ -1679,20 +1679,19 @@ impl Parser {
     pub(crate) fn parse_reindex(&mut self) -> Result<ReindexStatement, ParserError> {
         let mut verbose = false;
         let mut concurrent = false;
-        let target;
 
         if self.try_consume_keyword(Keyword::VERBOSE) {
             verbose = true;
         }
 
-        match self.peek_keyword() {
+        let target = match self.peek_keyword() {
             Some(Keyword::TABLE) => {
                 self.advance();
                 if self.try_consume_keyword(Keyword::CONCURRENTLY) {
                     concurrent = true;
                 }
                 let name = self.parse_object_name()?;
-                target = ReindexTarget::Table(name);
+                ReindexTarget::Table(name)
             }
             Some(Keyword::INDEX) => {
                 self.advance();
@@ -1700,30 +1699,27 @@ impl Parser {
                     concurrent = true;
                 }
                 let name = self.parse_object_name()?;
-                target = ReindexTarget::Index(name);
+                ReindexTarget::Index(name)
             }
             Some(Keyword::SCHEMA) => {
                 self.advance();
-                let name = self.parse_identifier()?;
-                target = ReindexTarget::Schema(name);
+                ReindexTarget::Schema(self.parse_identifier()?)
             }
             Some(Keyword::DATABASE) => {
                 self.advance();
-                let name = self.parse_identifier()?;
-                target = ReindexTarget::Database(name);
+                ReindexTarget::Database(self.parse_identifier()?)
             }
             Some(Keyword::SYSTEM_P) => {
                 self.advance();
-                target = ReindexTarget::System;
+                ReindexTarget::System
             }
             _ => {
                 if self.try_consume_keyword(Keyword::CONCURRENTLY) {
                     concurrent = true;
                 }
-                let name = self.parse_object_name()?;
-                target = ReindexTarget::Index(name);
+                ReindexTarget::Index(self.parse_object_name()?)
             }
-        }
+        };
 
         Ok(ReindexStatement { target, verbose, concurrent })
     }
@@ -1767,7 +1763,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_create_aggregate(&mut self) -> Result<CreateAggregateStatement, ParserError> {
-        let name = self.consume_any_identifier()?;
+        let name = self.parse_object_name()?.join(".");
         let base_types = if self.match_token(&Token::LParen) {
             self.advance();
             if self.match_token(&Token::RParen) {
