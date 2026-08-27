@@ -29,7 +29,7 @@
 <dependency>
   <groupId>io.github.c2j</groupId>
   <artifactId>ogsql-parser-java</artifactId>
-  <version>0.10.0</version>
+  <version>0.10.1</version>
 </dependency>
 ```
 
@@ -59,7 +59,7 @@ try (Ogsql ogsql = Ogsql.newInstance()) {
     String back = ogsql.json2sql(r.resultJson());
 
     // 6) 版本与健康
-    String ver = ogsql.version();   // Rust crate 版本，如 0.10.0
+    String ver = ogsql.version();   // Rust crate 版本，如 0.10.1
     boolean alive = ogsql.isAlive();
 
 } // close()：优雅 shutdown → destroy → 兜底 destroyForcibly，无僵尸进程
@@ -129,7 +129,7 @@ try (Ogsql ogsql = Ogsql.newInstance()) {
 <dependency>
   <groupId>io.github.c2j</groupId>
   <artifactId>ogsql-parser-java</artifactId>
-  <version>0.10.0</version>
+  <version>0.10.1</version>
 </dependency>
 ```
 
@@ -141,7 +141,7 @@ Token 需要 `packages:read`。
 <dependency>
   <groupId>io.github.c2j</groupId>
   <artifactId>ogsql-parser-java</artifactId>
-  <version>0.10.0</version>
+  <version>0.10.1</version>
 </dependency>
 ```
 

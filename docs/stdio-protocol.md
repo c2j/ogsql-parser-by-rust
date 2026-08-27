@@ -78,7 +78,7 @@
 ```bash
 $ ogsql serve-stdio
 {"id":1,"op":"hello"}
-{"id":1,"ok":true,"result":{"version":"0.10.0","protocol":1,"ops":["hello","ping","shutdown","parse","format","tokenize","validate","json2sql"]}}
+{"id":1,"ok":true,"result":{"version":"0.10.1","protocol":1,"ops":["hello","ping","shutdown","parse","format","tokenize","validate","json2sql"]}}
 {"id":2,"op":"parse","sql":"SELECT id, name FROM users WHERE status = 'active'"}
 {"id":2,"ok":true,"result":{"statements":[{...}],"errors":[],"query_fingerprints":[...],"comments":null}}
 {"id":3,"op":"validate","sql":"SELECT FROM"}
