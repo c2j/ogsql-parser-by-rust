@@ -1544,9 +1544,9 @@ pub struct InsertStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct OnDuplicateKeyUpdate {
-    pub assignments: Vec<UpdateAssignment>,
-    pub where_clause: Option<Expr>,
+pub enum OnDuplicateKeyUpdate {
+    Nothing,
+    Update { assignments: Vec<UpdateAssignment>, where_clause: Option<Expr> },
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

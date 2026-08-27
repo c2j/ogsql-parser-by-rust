@@ -7055,7 +7055,11 @@ fn test_on_duplicate_key_update() {
     match stmt {
         Statement::Insert(ins) => {
             let dk = ins.node.on_duplicate_key.expect("expected on_duplicate_key");
-            assert_eq!(dk.assignments.len(), 1);
+            let assignments = match &dk {
+                OnDuplicateKeyUpdate::Update { assignments, .. } => assignments,
+                _ => panic!("expected on_duplicate_key update"),
+            };
+            assert_eq!(assignments.len(), 1);
         }
         _ => panic!("expected Insert"),
     }
@@ -7067,10 +7071,29 @@ fn test_on_duplicate_key_update_multiple() {
     match stmt {
         Statement::Insert(ins) => {
             let dk = ins.node.on_duplicate_key.expect("expected on_duplicate_key");
-            assert_eq!(dk.assignments.len(), 2);
+            let assignments = match &dk {
+                OnDuplicateKeyUpdate::Update { assignments, .. } => assignments,
+                _ => panic!("expected on_duplicate_key update"),
+            };
+            assert_eq!(assignments.len(), 2);
         }
         _ => panic!("expected Insert"),
     }
+}
+
+#[test]
+fn test_on_duplicate_key_update_nothing() {
+    let stmt = parse_one("INSERT INTO t(a,b) VALUES (1,2) ON DUPLICATE KEY UPDATE NOTHING;");
+    match &stmt {
+        Statement::Insert(ins) => {
+            assert!(matches!(ins.node.on_duplicate_key, Some(OnDuplicateKeyUpdate::Nothing)));
+        }
+        _ => panic!("expected Insert"),
+    }
+    let formatted = SqlFormatter::new().format_statement(&stmt);
+    assert_eq!(formatted, "INSERT INTO t (a, b) VALUES (1, 2) ON DUPLICATE KEY UPDATE NOTHING");
+    let reparsed = parse_one(&formatted);
+    assert_eq_ignoring_span(&stmt, &reparsed);
 }
 
 // ── Reserved / Non-reserved keyword as identifier tests ──
