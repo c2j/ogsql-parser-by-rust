@@ -106,6 +106,34 @@ fn r007_like_and_compound_warns() {
 }
 
 #[test]
+fn issue296_full_function_body_lints() {
+    // Exact scenario from issue #296 Test B.
+    let stmts = parse(
+        "CREATE OR REPLACE FUNCTION bad_func RETURN VARCHAR2 IS
+            v_name VARCHAR2;
+         BEGIN
+            SELECT * INTO v_name FROM users WHERE id = 1;
+            EXECUTE IMMEDIATE 'DELETE FROM log WHERE id=' || v_name;
+            RETURN v_name;
+         EXCEPTION
+            WHEN OTHERS THEN RETURN NULL;
+         END;",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R001"), "SELECT * inside function should trigger R001");
+    assert!(has_rule(&w, "C012"), "EXECUTE IMMEDIATE concat should trigger C012");
+    assert!(has_rule(&w, "C013"), "WHEN OTHERS swallow should trigger C013");
+}
+
+#[test]
+fn issue296_plain_dml_still_lints() {
+    let stmts = parse("SELECT * FROM users WHERE DECODE(status, A, 1, 0) = 1");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R001"), "plain SELECT * still triggers R001");
+    assert!(has_rule(&w, "P009"), "DECODE still triggers P009");
+}
+
+#[test]
 fn r001_union_both_select_star_warns() {
     let stmts = parse("SELECT * FROM t1 UNION ALL SELECT * FROM t2");
     let w = lint(&stmts);
