@@ -834,6 +834,12 @@ pub(crate) fn collect_selects_from_stmt<'a>(
             out.push((&cmv.query, loc));
             collect_nested_in_select(&cmv.query, out);
         }
+        // #296: descend into stored-program bodies for the 3 CREATE variants.
+        Statement::CreateFunction(_) | Statement::CreateProcedure(_) | Statement::CreatePackageBody(_) => {
+            for block in pl_blocks_from_stmt(stmt) {
+                collect_selects_from_pl_block(block, out);
+            }
+        }
         _ => {}
     }
 }

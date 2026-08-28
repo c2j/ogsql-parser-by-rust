@@ -448,7 +448,7 @@ impl Parser {
                         Token::Keyword(Keyword::LIKE) => {
                             self.advance();
                             self.advance();
-                            let pattern = self.parse_expr()?;
+                            let pattern = self.parse_expr_with_precedence(11)?;
                             let escape = if self.match_keyword(Keyword::ESCAPE) {
                                 self.advance();
                                 Some(Box::new(self.parse_expr()?))
@@ -467,7 +467,7 @@ impl Parser {
                         Token::Keyword(Keyword::ILIKE) => {
                             self.advance();
                             self.advance();
-                            let pattern = self.parse_expr()?;
+                            let pattern = self.parse_expr_with_precedence(11)?;
                             let escape = if self.match_keyword(Keyword::ESCAPE) {
                                 self.advance();
                                 Some(Box::new(self.parse_expr()?))
@@ -487,7 +487,7 @@ impl Parser {
                             self.advance();
                             self.advance();
                             self.expect_keyword(Keyword::TO)?;
-                            let pattern = self.parse_expr()?;
+                            let pattern = self.parse_expr_with_precedence(11)?;
                             *left = Expr::BinaryOp {
                                 left: Box::new(std::mem::replace(left, Expr::Default)),
                                 op: "NOT SIMILAR TO".to_string(),
@@ -507,7 +507,7 @@ impl Parser {
             }
             Token::Keyword(Keyword::LIKE) => {
                 self.advance();
-                let pattern = self.parse_expr()?;
+                let pattern = self.parse_expr_with_precedence(11)?;
                 let escape = if self.match_keyword(Keyword::ESCAPE) {
                     self.advance();
                     Some(Box::new(self.parse_expr()?))
@@ -525,7 +525,7 @@ impl Parser {
             }
             Token::Keyword(Keyword::ILIKE) => {
                 self.advance();
-                let pattern = self.parse_expr()?;
+                let pattern = self.parse_expr_with_precedence(11)?;
                 let escape = if self.match_keyword(Keyword::ESCAPE) {
                     self.advance();
                     Some(Box::new(self.parse_expr()?))
@@ -544,7 +544,7 @@ impl Parser {
             Token::Keyword(Keyword::SIMILAR) => {
                 self.advance();
                 self.expect_keyword(Keyword::TO)?;
-                let pattern = self.parse_expr()?;
+                let pattern = self.parse_expr_with_precedence(11)?;
                 *left = Expr::BinaryOp {
                     left: Box::new(std::mem::replace(left, Expr::Default)),
                     op: "SIMILAR TO".to_string(),

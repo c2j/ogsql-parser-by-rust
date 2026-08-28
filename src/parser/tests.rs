@@ -9929,6 +9929,44 @@ fn test_like_escape_no_error() {
     assert!(errors.is_empty(), "LIKE ESCAPE should not produce errors, got: {:?}", errors);
 }
 
+#[test]
+fn test_like_pattern_stops_at_and() {
+    // LIKE pattern must not swallow AND/OR; `name LIKE '%abc' AND status = 1`
+    // parses as (name LIKE '%abc') AND (status = 1).
+    let stmt = parse_one("SELECT v FROM users WHERE name LIKE '%abc' AND status = 1");
+    match stmt {
+        Statement::Select(s) => {
+            let w = s.where_clause.as_ref().expect("expected WHERE");
+            match w {
+                Expr::BinaryOp { op, left, right, .. } => {
+                    assert_eq!(op, "AND");
+                    assert!(
+                        matches!(left.as_ref(), Expr::Like { pattern: p, .. } if matches!(p.as_ref(), Expr::Literal(_)))
+                    );
+                    assert!(matches!(right.as_ref(), Expr::BinaryOp { op: r, .. } if r == "="));
+                }
+                other => panic!("expected AND at top level, got {:?}", other),
+            }
+        }
+        _ => panic!("expected Select, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn test_like_like_and_chain() {
+    let stmt = parse_one("SELECT v FROM users WHERE name LIKE '%abc' AND status LIKE 'A%'");
+    match stmt {
+        Statement::Select(s) => {
+            let w = s.where_clause.as_ref().expect("expected WHERE");
+            match w {
+                Expr::BinaryOp { op, .. } => assert_eq!(op, "AND"),
+                other => panic!("expected AND at top level, got {:?}", other),
+            }
+        }
+        _ => panic!("expected Select, got {:?}", stmt),
+    }
+}
+
 // ========== Task 6: WINDOW clause ==========
 
 #[test]

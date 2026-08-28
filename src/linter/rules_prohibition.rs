@@ -19,7 +19,9 @@ pub fn register(linter: &mut SqlLinter) {
             name: "select-star",
             description: "SELECT * in nested queries only; outer-most SELECT * acceptable, nested subqueries must use explicit column lists",
             level: WarningLevel::Prohibition,
-            stmt_kind: StatementKind::Dml,
+            // All (was Dml): also dispatch on PL-block statements so SELECT *
+            // inside CREATE FUNCTION/PROCEDURE/PACKAGE BODY is caught (#296).
+            stmt_kind: StatementKind::All,
             check_fn: check_r001,
         },
         LintRuleEntry {
@@ -51,7 +53,8 @@ pub fn register(linter: &mut SqlLinter) {
             name: "implicit-type-conversion",
             description: "Implicit type conversion in WHERE may cause index invalidation",
             level: WarningLevel::Prohibition,
-            stmt_kind: StatementKind::Dml,
+            // All (was Dml): also dispatch on PL-block statements (#296).
+            stmt_kind: StatementKind::All,
             check_fn: check_r005,
         },
         LintRuleEntry {
@@ -59,7 +62,8 @@ pub fn register(linter: &mut SqlLinter) {
             name: "function-on-where-column",
             description: "Function wrapping column in WHERE clauses defeats index usage",
             level: WarningLevel::Prohibition,
-            stmt_kind: StatementKind::Dml,
+            // All (was Dml): also dispatch on PL-block statements (#296).
+            stmt_kind: StatementKind::All,
             check_fn: check_r006,
         },
         LintRuleEntry {
@@ -67,7 +71,8 @@ pub fn register(linter: &mut SqlLinter) {
             name: "like-leading-wildcard",
             description: "LIKE with leading wildcard prevents index usage and triggers full table scan",
             level: WarningLevel::Prohibition,
-            stmt_kind: StatementKind::Dml,
+            // All (was Dml): also dispatch on PL-block statements (#296).
+            stmt_kind: StatementKind::All,
             check_fn: check_r007,
         },
         LintRuleEntry {
@@ -522,6 +527,15 @@ fn where_and_tables(stmt: &Statement) -> (Option<&Expr>, &[crate::ast::TableRef]
         Statement::Select(s) => (s.where_clause.as_ref(), &s.from),
         Statement::Update(s) => (s.where_clause.as_ref(), &s.tables),
         Statement::Delete(s) => (s.where_clause.as_ref(), &s.tables),
+        // #296: use WHERE of embedded SELECTs inside PL bodies / CREATE bodies
+        // (tables list empty: not aggregated from the embedded SELECT's FROM).
+        Statement::AnonyBlock(b) => (first_embedded_where(&b.block), &[]),
+        Statement::Do(d) => (d.block.as_ref().and_then(first_embedded_where), &[]),
+        Statement::CreateFunction(f) => (f.block.as_ref().and_then(first_embedded_where), &[]),
+        Statement::CreateProcedure(p) => (p.block.as_ref().and_then(first_embedded_where), &[]),
+        Statement::CreatePackageBody(_) => {
+            (crate::linter::pl_blocks_from_stmt(stmt).into_iter().find_map(first_embedded_where), &[])
+        }
         _ => (extract_where_clause(stmt), &[]),
     }
 }
@@ -1183,6 +1197,20 @@ fn extract_where_clause(stmt: &Statement) -> Option<&Expr> {
         Statement::Select(s) => s.where_clause.as_ref(),
         Statement::Update(s) => s.where_clause.as_ref(),
         Statement::Delete(s) => s.where_clause.as_ref(),
+        // #296: check WHERE of embedded SELECTs inside PL bodies / CREATE bodies.
+        Statement::AnonyBlock(b) => first_embedded_where(&b.block),
+        Statement::Do(d) => d.block.as_ref().and_then(first_embedded_where),
+        Statement::CreateFunction(f) => f.block.as_ref().and_then(first_embedded_where),
+        Statement::CreateProcedure(p) => p.block.as_ref().and_then(first_embedded_where),
+        Statement::CreatePackageBody(_) => {
+            crate::linter::pl_blocks_from_stmt(stmt).into_iter().find_map(first_embedded_where)
+        }
         _ => None,
     }
+}
+
+fn first_embedded_where(block: &PlBlock) -> Option<&Expr> {
+    let mut selects: Vec<(&SelectStatement, SourceLocation)> = Vec::new();
+    crate::linter::collect_selects_from_pl_block(block, &mut selects);
+    selects.iter().find_map(|(s, _)| s.where_clause.as_ref())
 }

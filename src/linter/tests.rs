@@ -67,6 +67,45 @@ fn r001_where_subquery_star_flagged() {
 }
 
 #[test]
+fn r001_select_star_inside_function_warns() {
+    // Regression for #296: SELECT * inside CREATE FUNCTION body must warn.
+    let stmts = parse(
+        "CREATE OR REPLACE FUNCTION bad_func RETURN VARCHAR2 IS
+            v_name VARCHAR2;
+         BEGIN
+            SELECT * INTO v_name FROM users WHERE id = 1;
+            RETURN v_name;
+         END;",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R001"), "SELECT * inside function body should trigger R001");
+}
+
+#[test]
+fn r005_r006_r007_inside_function_warn() {
+    let stmts = parse(
+        "CREATE FUNCTION bad_func RETURN VARCHAR2 IS v_name VARCHAR2;
+         BEGIN
+            SELECT v_name INTO v_name FROM users WHERE LEFT(name, 3) = 'abc' AND name LIKE '%abc' AND status = 1;
+            RETURN v_name;
+         END;",
+    );
+    let w = lint(&stmts);
+    // R007: LIKE with leading wildcard '%abc'
+    // R006: LEFT(name,3) function on column
+    assert!(has_rule(&w, "R006"), "function on WHERE column inside function body should trigger R006");
+    assert!(has_rule(&w, "R007"), "LIKE leading wildcard inside function body should trigger R007");
+}
+
+#[test]
+fn r007_like_and_compound_warns() {
+    // LIKE followed by AND must still trigger R007 (precedence regression guard).
+    let stmts = parse("SELECT v FROM users WHERE name LIKE '%abc' AND status = 1");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R007"), "LIKE '%...' AND ... should trigger R007");
+}
+
+#[test]
 fn r001_union_both_select_star_warns() {
     let stmts = parse("SELECT * FROM t1 UNION ALL SELECT * FROM t2");
     let w = lint(&stmts);
