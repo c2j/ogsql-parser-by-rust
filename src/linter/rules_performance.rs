@@ -205,6 +205,16 @@ pub fn register(linter: &mut SqlLinter) {
             stmt_kind: StatementKind::All,
             check_fn: check_p024,
         },
+        LintRuleEntry {
+            id: "P025",
+            name: "in-subquery-to-exists",
+            description: "IN (subquery) may perform worse than EXISTS or JOIN; consider rewriting",
+            // Suggestion per issue #300 (positive IN is a soft perf hint, unlike
+            // NOT IN); P-prefix kept per issue's requested ID despite the level.
+            level: WarningLevel::Suggestion,
+            stmt_kind: StatementKind::Dml,
+            check_fn: check_p025,
+        },
     ];
     for rule in rules {
         linter.register(rule);
@@ -1287,4 +1297,36 @@ fn check_p024(
 
 fn is_rownum_ref(e: &Expr) -> bool {
     matches!(e, Expr::ColumnRef(name) if name.len() == 1 && name[0].eq_ignore_ascii_case("rownum"))
+}
+
+// ── P025: positive IN (subquery) → EXISTS or JOIN ──
+
+fn check_p025(
+    curr_stmt: &StatementInfo,
+    _stmts: &[StatementInfo],
+    _schema: Option<&crate::analyzer::schema::SchemaMap>,
+    _indexes: Option<&crate::linter::IndexInfo>,
+    _config: &LintConfig,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
+    let loc = stmt_location(curr_stmt);
+    if let Some(where_clause) = extract_where(&curr_stmt.statement) {
+        walk_expr(where_clause, &mut |e| match e {
+            Expr::InSubquery { negated: false, .. } => {
+                warnings.push(make_warning(
+                    WarningLevel::Suggestion,
+                    "P025",
+                    "in-subquery-to-exists",
+                    "IN \u{5b50}\u{67e5}\u{8be2}\u{53ef}\u{80fd}\u{6027}\u{80fd}\u{4e0d}\u{4f73}\u{ff0c}\u{8003}\u{8651}\u{4f7f}\u{7528} EXISTS \u{6216} JOIN \u{66ff}\u{4ee3}".into(),
+                    Some("\u{6539}\u{7528} EXISTS (SELECT 1 ...) \u{6216} JOIN"),
+                    loc,
+                    None,
+                    confidence,
+                ));
+                false
+            }
+            _ => true,
+        });
+    }
 }

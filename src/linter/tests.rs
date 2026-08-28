@@ -608,6 +608,31 @@ fn p024_rownum_inside_function_warns() {
     assert!(has_rule(&w, "P024"), "ROWNUM inside function body should trigger P024");
 }
 
+// ── P025: positive IN subquery → EXISTS/JOIN ──
+
+#[test]
+fn p025_in_subquery_warns() {
+    let stmts = parse("SELECT * FROM a WHERE id IN (SELECT id FROM b)");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "P025"), "positive IN subquery should trigger P025");
+    assert!(!has_rule(&w, "P002"), "positive IN should NOT trigger P002");
+}
+
+#[test]
+fn p025_not_in_still_p002() {
+    let stmts = parse("SELECT * FROM a WHERE id NOT IN (SELECT id FROM b)");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "P025"), "NOT IN should not trigger P025");
+    assert!(has_rule(&w, "P002"), "NOT IN still triggers P002");
+}
+
+#[test]
+fn p025_in_list_no_warn() {
+    let stmts = parse("SELECT * FROM a WHERE id IN (1, 2, 3)");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "P025"), "IN with literal list should not trigger P025");
+}
+
 // P023 nested scenarios — detected via collect_nested_selects
 
 #[test]
