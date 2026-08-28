@@ -1,8 +1,8 @@
 use crate::ast::plpgsql::PlStatement;
 use crate::ast::{Expr, InsertSource, SelectStatement, SelectTarget, SetOperation, Statement, StatementInfo, TableRef};
 use crate::linter::{
-    collect_selects_from_stmt, loc_from_spanned, make_warning, stmt_location, walk_expr, walk_select_exprs, Confidence,
-    LintConfig, LintRuleEntry, SqlLinter, SqlWarning, StatementKind, WarningLevel,
+    collect_selects_from_stmt, extract_where, literals_equal, loc_from_spanned, make_warning, stmt_location, walk_expr,
+    walk_select_exprs, Confidence, LintConfig, LintRuleEntry, SqlLinter, SqlWarning, StatementKind, WarningLevel,
 };
 use crate::token::SourceLocation;
 
@@ -218,15 +218,6 @@ pub fn register(linter: &mut SqlLinter) {
     ];
     for rule in rules {
         linter.register(rule);
-    }
-}
-
-fn extract_where(stmt: &Statement) -> Option<&Expr> {
-    match stmt {
-        Statement::Select(s) => s.where_clause.as_ref(),
-        Statement::Update(s) => s.where_clause.as_ref(),
-        Statement::Delete(s) => s.where_clause.as_ref(),
-        _ => None,
     }
 }
 
@@ -914,13 +905,6 @@ fn check_p015(
             }
             true
         });
-    }
-}
-
-fn literals_equal(a: &Expr, b: &Expr) -> bool {
-    match (a, b) {
-        (Expr::Literal(l), Expr::Literal(r)) => l == r,
-        _ => false,
     }
 }
 

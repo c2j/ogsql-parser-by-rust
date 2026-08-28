@@ -763,6 +763,24 @@ pub fn stmt_location(info: &StatementInfo) -> SourceLocation {
     SourceLocation { line: info.start_line, column: info.start_col, offset: 0 }
 }
 
+/// Get the top-level WHERE clause of a DML statement (Select/Update/Delete).
+pub(crate) fn extract_where(stmt: &Statement) -> Option<&crate::ast::Expr> {
+    match stmt {
+        Statement::Select(s) => s.where_clause.as_ref(),
+        Statement::Update(s) => s.where_clause.as_ref(),
+        Statement::Delete(s) => s.where_clause.as_ref(),
+        _ => None,
+    }
+}
+
+/// Compare two expressions as literal values (P015/S009 tautology checks).
+pub(crate) fn literals_equal(a: &crate::ast::Expr, b: &crate::ast::Expr) -> bool {
+    match (a, b) {
+        (crate::ast::Expr::Literal(l), crate::ast::Expr::Literal(r)) => l == r,
+        _ => false,
+    }
+}
+
 /// Collect ALL `SelectStatement` nodes reachable from the given statements,
 /// including those nested inside:
 ///
@@ -1155,6 +1173,11 @@ fn collect_selects_from_pl_stmts<'a>(
             }
             PlStatement::Open(o) => {
                 if let PlOpenKind::ForQuery { parsed_query: Some(ref q), .. } = o.kind {
+                    collect_selects_from_stmt(q, SourceLocation::default(), out);
+                }
+            }
+            PlStatement::ReturnQuery(rq) => {
+                if let Some(ref q) = rq.parsed_query {
                     collect_selects_from_stmt(q, SourceLocation::default(), out);
                 }
             }

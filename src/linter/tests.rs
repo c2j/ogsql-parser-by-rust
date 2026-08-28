@@ -1276,6 +1276,36 @@ fn s008_complex_sql() {
     assert!(has_rule(&w, "S008"), "expected S008 for long SQL");
 }
 
+// ── S009: tautological condition (1=1, 'a'='a') in WHERE ──
+
+#[test]
+fn s009_one_equals_one_warns() {
+    let stmts = parse("SELECT * FROM users WHERE 1=1 AND status = 'A'");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "S009"), "1=1 in WHERE should trigger S009");
+}
+
+#[test]
+fn s009_string_literals_equal_warns() {
+    let stmts = parse("SELECT * FROM users WHERE 'a' = 'a'");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "S009"), "equal string literals should trigger S009");
+}
+
+#[test]
+fn s009_one_equals_two_no_warn() {
+    let stmts = parse("SELECT * FROM users WHERE 1 = 2");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "S009"), "1=2 is not tautological");
+}
+
+#[test]
+fn s009_column_equals_literal_no_warn() {
+    let stmts = parse("SELECT * FROM users WHERE status = 'A'");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "S009"), "column=literal should not trigger S009");
+}
+
 // ── R005: Schema-aware implicit type conversion ──
 
 #[test]
