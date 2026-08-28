@@ -1814,3 +1814,34 @@ fn r012_group_by_star_skipped() {
     let w = lint(&stmts);
     assert!(!has_rule(&w, "R012"), "SELECT * with GROUP BY should be skipped (no false positive)");
 }
+
+// ── R013: Oracle implicit join (comma-separated FROM) ──
+
+#[test]
+fn r013_implicit_join_warns() {
+    let stmts = parse("SELECT a.id, b.name FROM a, b WHERE a.id = b.id");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R013"), "comma-separated FROM should trigger R013");
+}
+
+#[test]
+fn r013_explicit_join_no_warn() {
+    let stmts = parse("SELECT a.id, b.name FROM a INNER JOIN b ON a.id = b.id");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "R013"), "explicit ANSI JOIN should not trigger R013");
+}
+
+#[test]
+fn r013_single_table_no_warn() {
+    let stmts = parse("SELECT id FROM a");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "R013"), "single-table FROM should not trigger R013");
+}
+
+#[test]
+fn r013_cross_join_style_warns() {
+    // Comma without WHERE = implicit cross join; R013 fires for the comma style.
+    let stmts = parse("SELECT * FROM a, b");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R013"), "comma-separated FROM without WHERE still triggers R013");
+}

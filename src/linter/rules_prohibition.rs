@@ -115,6 +115,14 @@ pub fn register(linter: &mut SqlLinter) {
             stmt_kind: StatementKind::Select,
             check_fn: check_r012,
         },
+        LintRuleEntry {
+            id: "R013",
+            name: "implicit-join",
+            description: "Oracle-style comma-separated FROM (implicit join) hurts readability; use ANSI JOIN",
+            level: WarningLevel::Prohibition,
+            stmt_kind: StatementKind::Select,
+            check_fn: check_r013,
+        },
     ];
     for rule in rules {
         linter.register(rule);
@@ -1140,6 +1148,36 @@ fn check_order_by_select_targets(
                 Some(&suggestion),
                 loc,
                 Some("SELECT 规范"),
+                confidence,
+            ));
+        }
+    }
+}
+
+// ── R013: Oracle implicit join — FROM a, b (comma-separated table list) ──
+// Explicit JOINs fold into a single TableRef::Join; multiple top-level
+// TableRef entries mean comma-separated FROM.
+
+fn check_r013(
+    curr_stmt: &StatementInfo,
+    _stmts: &[StatementInfo],
+    _schema: Option<&crate::analyzer::schema::SchemaMap>,
+    _indexes: Option<&crate::linter::IndexInfo>,
+    _config: &LintConfig,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
+    if let Statement::Select(s) = &curr_stmt.statement {
+        if s.from.len() > 1 {
+            let loc = loc_from_spanned(s, stmt_location(curr_stmt));
+            warnings.push(make_warning(
+                WarningLevel::Prohibition,
+                "R013",
+                "implicit-join",
+                "\u{4f7f}\u{7528} Oracle \u{9690}\u{5f0f}\u{8fde}\u{63a5}\u{8bed}\u{6cd5}\u{ff08}\u{9017}\u{53f7}\u{5206}\u{9694} FROM\u{ff09}\u{ff0c}\u{5efa}\u{8bae}\u{6539}\u{4e3a} ANSI JOIN".into(),
+                Some("\u{6539}\u{7528} INNER JOIN / LEFT JOIN \u{63d0}\u{9ad8}\u{53ef}\u{8bfb}\u{6027}"),
+                loc,
+                None,
                 confidence,
             ));
         }
