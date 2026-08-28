@@ -379,7 +379,7 @@ fn check_s009(
                         WarningLevel::Suggestion,
                         "S009",
                         "tautological-condition",
-                        format!("WHERE \u{5b50}\u{53e5}\u{4e2d}\u{5b58}\u{5728}\u{6052}\u{771f}\u{6761}\u{4ef6} {} \u{ff0c}\u{5efa}\u{8bae}\u{79fb}\u{9664}", op),
+                        format!("WHERE \u{5b50}\u{53e5}\u{4e2d}\u{5b58}\u{5728}\u{6052}\u{771f}\u{6761}\u{4ef6}\u{ff08}{op}\u{ff09}\u{ff0c}\u{5efa}\u{8bae}\u{79fb}\u{9664}"),
                         Some("\u{79fb}\u{9664}\u{8be5}\u{6761}\u{4ef6}\u{ff0c}\u{76f4}\u{63a5}\u{7f16}\u{5199}\u{5176}\u{4ed6}\u{6761}\u{4ef6}"),
                         loc,
                         None,

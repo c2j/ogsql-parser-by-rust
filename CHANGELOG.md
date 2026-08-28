@@ -2,6 +2,34 @@
 
 All notable changes to ogsql-parser will be documented in this file.
 
+## [0.11.0]
+
+### Added
+- `P024` `rownum-pagination`: detects the Oracle-only `ROWNUM` pseudo-column in
+  WHERE / SELECT lists and suggests `LIMIT/OFFSET` or `FETCH FIRST` (#297).
+- `C019` `commit-inside-loop`: detects COMMIT/ROLLBACK inside PL/pgSQL
+  Loop/While/For/ForEach bodies; non-loop COMMIT remains C014's scope (#298).
+- `R013` `implicit-join`: flags Oracle-style comma-separated FROM (`FROM a, b`)
+  and suggests explicit ANSI JOIN (#299).
+- `P025` `in-subquery-to-exists`: Suggestion-level hint for positive `IN
+  (subquery)`; NOT IN stays with P002 (#300).
+- `S009` `tautological-condition`: flags redundant `1=1` / `'a' = 'a'` in WHERE (#301).
+
+### Fixed
+- Linter now traverses stored-program bodies: `CREATE FUNCTION` /
+  `CREATE PROCEDURE` / `CREATE PACKAGE BODY` are classified as PL blocks, and all
+  PL walk rules (C011-C014/C016/C017/P021/S005) plus `collect_selects_from_stmt`
+  descend into their embedded bodies, so DML rules (R001/R005/R006/R007) and PL
+  rules now fire on SQL inside stored programs (#296).
+- Parser: `CREATE PROCEDURE ... LANGUAGE plpgsql AS $$...$$` no longer silently
+  drops the body when options precede the AS/IS marker; the options text is parsed
+  before the body is captured.
+- Parser: `LIKE`/`ILIKE`/`SIMILAR TO` pattern expressions no longer swallow
+  trailing `AND`/`OR` (pattern parsed at precedence 11, above boolean operators),
+  so `x LIKE '%a' AND y = 1` produces the correct AST.
+- Parser: static `RETURN QUERY <dml>` retains a parsed AST in
+  `PlReturnQueryStmt.parsed_query` (serde-skipped) so linter/analyzer can traverse it.
+
 ## [0.10.1]
 
 ### Fixed
