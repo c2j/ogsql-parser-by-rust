@@ -383,6 +383,9 @@ pub struct PlReturnQueryStmt {
     pub dynamic_expr: Option<crate::ast::Expr>,
     #[serde(default)]
     pub using_args: Vec<PlUsingArg>,
+    /// Parsed AST of a static `RETURN QUERY <dml>` body (for linter/analyzer traversal).
+    #[serde(skip)]
+    pub parsed_query: Option<Box<crate::ast::Statement>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

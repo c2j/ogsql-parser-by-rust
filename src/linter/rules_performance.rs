@@ -195,6 +195,16 @@ pub fn register(linter: &mut SqlLinter) {
             stmt_kind: StatementKind::All,
             check_fn: check_p023,
         },
+        LintRuleEntry {
+            id: "P024",
+            name: "rownum-pagination",
+            description: "ROWNUM is an Oracle-only pagination pseudo-column; use LIMIT/OFFSET or FETCH FIRST",
+            level: WarningLevel::Performance,
+            // All: dispatches on CreateFunction/CreateProcedure/CreatePackageBody (PlBlock
+            // after Task 2) AND plain DML, so ROWNUM inside PL bodies is also detected.
+            stmt_kind: StatementKind::All,
+            check_fn: check_p024,
+        },
     ];
     for rule in rules {
         linter.register(rule);
@@ -1215,4 +1225,66 @@ fn check_p023(
             ));
         }
     }
+}
+
+// ── P024: ROWNUM pseudo-column (Oracle pagination) → LIMIT/OFFSET or FETCH FIRST ──
+
+fn check_p024(
+    curr_stmt: &StatementInfo,
+    _stmts: &[StatementInfo],
+    _schema: Option<&crate::analyzer::schema::SchemaMap>,
+    _indexes: Option<&crate::linter::IndexInfo>,
+    _config: &LintConfig,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
+    let loc = stmt_location(curr_stmt);
+    let mut selects: Vec<(&SelectStatement, SourceLocation)> = Vec::new();
+    collect_selects_from_stmt(&curr_stmt.statement, loc, &mut selects);
+    for (s, _) in selects {
+        let mut found = false;
+        if let Some(ref w) = s.where_clause {
+            walk_expr(w, &mut |e| {
+                if is_rownum_ref(e) {
+                    found = true;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if !found {
+            for t in &s.targets {
+                if let SelectTarget::Expr(e, _) = t {
+                    walk_expr(e, &mut |e| {
+                        if is_rownum_ref(e) {
+                            found = true;
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    if found {
+                        break;
+                    }
+                }
+            }
+        }
+        if found {
+            warnings.push(make_warning(
+                WarningLevel::Performance,
+                "P024",
+                "rownum-pagination",
+                "ROWNUM \u{4e3a} Oracle \u{4e13}\u{6709}\u{5206}\u{9875}\u{8bed}\u{6cd5}\u{ff0c}\u{5efa}\u{8bae}\u{4f7f}\u{7528} LIMIT/OFFSET \u{6216} FETCH FIRST".into(),
+                Some("\u{5efa}\u{8bae}\u{4f7f}\u{7528} LIMIT/OFFSET \u{6216} FETCH FIRST"),
+                loc,
+                None,
+                confidence,
+            ));
+        }
+    }
+}
+
+fn is_rownum_ref(e: &Expr) -> bool {
+    matches!(e, Expr::ColumnRef(name) if name.len() == 1 && name[0].eq_ignore_ascii_case("rownum"))
 }

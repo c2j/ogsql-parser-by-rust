@@ -1906,16 +1906,23 @@ impl Parser {
                         is_dynamic: true,
                         dynamic_expr: Some(dynamic_expr),
                         using_args,
+                        parsed_query: None,
                     },
                     Some(SourceSpan { start, end: self.prev_location() }),
                 )));
             } else {
                 let save_pos = self.pos;
-                if let Some(_stmt) = self.try_parse_dml_statement() {
+                if let Some(stmt) = self.try_parse_dml_statement() {
                     let raw = self.tokens_to_raw_string(save_pos, self.pos);
                     self.try_consume_semicolon();
                     return Ok(PlStatement::ReturnQuery(Spanned::new(
-                        PlReturnQueryStmt { query: raw, is_dynamic: false, dynamic_expr: None, using_args: Vec::new() },
+                        PlReturnQueryStmt {
+                            query: raw,
+                            is_dynamic: false,
+                            dynamic_expr: None,
+                            using_args: Vec::new(),
+                            parsed_query: Some(stmt),
+                        },
                         Some(SourceSpan { start, end: self.prev_location() }),
                     )));
                 }
@@ -1927,6 +1934,7 @@ impl Parser {
                         is_dynamic: false,
                         dynamic_expr: Some(expr),
                         using_args: Vec::new(),
+                        parsed_query: None,
                     },
                     Some(SourceSpan { start, end: self.prev_location() }),
                 )));

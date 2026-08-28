@@ -585,6 +585,7 @@ fn test_plpgsql_return_query_select() {
             assert_eq!(q.query, "select * from t");
             assert!(q.dynamic_expr.is_none());
             assert!(q.using_args.is_empty());
+            assert!(q.parsed_query.is_some(), "static RETURN QUERY should retain parsed AST");
         }
         _ => panic!("expected ReturnQuery"),
     }
@@ -598,6 +599,7 @@ fn test_plpgsql_return_query_execute() {
             assert!(q.is_dynamic);
             assert!(q.dynamic_expr.is_some());
             assert!(q.using_args.is_empty());
+            assert!(q.parsed_query.is_none(), "dynamic RETURN QUERY EXECUTE has no parsed AST");
         }
         _ => panic!("expected ReturnQuery"),
     }

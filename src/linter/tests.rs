@@ -575,6 +575,39 @@ fn p023_select_order_by_not_triggered() {
     assert!(!has_rule(&w, "P023"));
 }
 
+// ── P024: ROWNUM pagination ──
+
+#[test]
+fn p024_rownum_in_where_warns() {
+    let stmts = parse("SELECT id FROM users WHERE ROWNUM <= 10");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "P024"), "ROWNUM in WHERE should trigger P024");
+}
+
+#[test]
+fn p024_rownum_in_select_list_warns() {
+    let stmts = parse("SELECT ROWNUM, id FROM users");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "P024"), "ROWNUM in SELECT list should trigger P024");
+}
+
+#[test]
+fn p024_limit_offset_no_warn() {
+    let stmts = parse("SELECT id FROM users LIMIT 10 OFFSET 20");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "P024"), "LIMIT/OFFSET pagination should not trigger P024");
+}
+
+#[test]
+fn p024_rownum_inside_function_warns() {
+    // Works because collect_selects_from_stmt now descends into CREATE bodies (#296).
+    let stmts = parse(
+        "CREATE FUNCTION f() RETURNS SETOF int LANGUAGE plpgsql AS $$ BEGIN RETURN QUERY SELECT id FROM users WHERE ROWNUM <= 10; END; $$",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "P024"), "ROWNUM inside function body should trigger P024");
+}
+
 // P023 nested scenarios — detected via collect_nested_selects
 
 #[test]
