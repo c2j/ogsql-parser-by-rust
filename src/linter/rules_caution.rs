@@ -516,21 +516,18 @@ fn check_c011(
 }
 
 fn walk_pl_block_for_goto(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_pl_stmts_for_goto(&block.body, found);
+        if *found {
+            return;
         }
-        _ => return,
-    };
-    check_pl_stmts_for_goto(&block.body, found);
-    if let Some(ref exc) = block.exception_block {
-        for handler in &exc.handlers {
-            check_pl_stmts_for_goto(&handler.statements, found);
+        if let Some(ref exc) = block.exception_block {
+            for handler in &exc.handlers {
+                check_pl_stmts_for_goto(&handler.statements, found);
+                if *found {
+                    return;
+                }
+            }
         }
     }
 }
@@ -607,18 +604,12 @@ fn check_c012(
 }
 
 fn walk_pl_for_execute_concat(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_pl_stmts_for_execute_concat(&block.body, found);
+        if *found {
+            return;
         }
-        _ => return,
-    };
-    check_pl_stmts_for_execute_concat(&block.body, found);
+    }
 }
 
 fn check_pl_stmts_for_execute_concat(stmts: &[PlStatement], found: &mut bool) {
@@ -707,18 +698,12 @@ fn check_c013(
 }
 
 fn walk_pl_for_exception_swallow(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_block_for_swallow(block, found);
+        if *found {
+            return;
         }
-        _ => return,
-    };
-    check_block_for_swallow(block, found);
+    }
 }
 
 fn check_block_for_swallow(block: &PlBlock, found: &mut bool) {
@@ -803,18 +788,12 @@ fn check_c014(
 }
 
 fn walk_pl_for_commit_rollback(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_pl_stmts_for_commit_rollback(&block.body, found);
+        if *found {
+            return;
         }
-        _ => return,
-    };
-    check_pl_stmts_for_commit_rollback(&block.body, found);
+    }
 }
 
 fn check_pl_stmts_for_commit_rollback(pl_stmts: &[PlStatement], found: &mut bool) {
@@ -920,20 +899,14 @@ fn check_c016(
 }
 
 fn walk_pl_for_autonomous(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_pl_decls_for_autonomous(&block.declarations, found);
+        if !*found {
+            check_pl_stmts_for_autonomous(&block.body, found);
         }
-        _ => return,
-    };
-    check_pl_decls_for_autonomous(&block.declarations, found);
-    if !*found {
-        check_pl_stmts_for_autonomous(&block.body, found);
+        if *found {
+            return;
+        }
     }
 }
 
@@ -994,18 +967,12 @@ fn check_c017(
 }
 
 fn walk_pl_for_raise_in_exception(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_exception_block_for_reraise(block, found);
+        if *found {
+            return;
         }
-        _ => return,
-    };
-    check_exception_block_for_reraise(block, found);
+    }
 }
 
 fn check_exception_block_for_reraise(block: &PlBlock, found: &mut bool) {

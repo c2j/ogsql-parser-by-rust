@@ -783,6 +783,38 @@ fn c014_pl_rollback() {
     assert!(has_rule(&w, "C014"), "expected C014 for ROLLBACK in PL block");
 }
 
+// ── #296: PL rules traverse CREATE FUNCTION/PROCEDURE/PACKAGE BODY ──
+
+#[test]
+fn c014_commit_in_function_warns() {
+    let stmts = parse("CREATE FUNCTION fn() RETURNS void LANGUAGE plpgsql AS $$ BEGIN COMMIT; END; $$");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C014"), "COMMIT inside CREATE FUNCTION body should trigger C014");
+}
+
+#[test]
+fn c012_concat_in_procedure_warns() {
+    let stmts =
+        parse("CREATE PROCEDURE p() LANGUAGE plpgsql AS $$ BEGIN EXECUTE IMMEDIATE 'SELECT * FROM ' || v_t; END; $$");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C012"), "EXECUTE IMMEDIATE concat inside procedure should trigger C012");
+}
+
+#[test]
+fn c013_swallow_in_package_body_warns() {
+    let stmts = parse(
+        "CREATE OR REPLACE PACKAGE BODY pkg AS
+            FUNCTION f RETURN VARCHAR2 IS v VARCHAR2;
+            BEGIN
+                NULL;
+            EXCEPTION WHEN OTHERS THEN RETURN NULL;
+            END;
+        END pkg;",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C013"), "WHEN OTHERS swallow inside package body function should trigger C013");
+}
+
 // ── C015: SELECT FOR UPDATE blocking ──
 
 #[test]

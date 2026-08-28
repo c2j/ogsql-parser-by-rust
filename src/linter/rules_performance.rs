@@ -1121,18 +1121,12 @@ fn check_p021(
 }
 
 fn walk_pl_for_loop_insert(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_pl_stmts_for_loop_insert(&block.body, found, false);
+        if *found {
+            return;
         }
-        _ => return,
-    };
-    check_pl_stmts_for_loop_insert(&block.body, found, false);
+    }
 }
 
 fn check_pl_stmts_for_loop_insert(pl_stmts: &[crate::ast::plpgsql::PlStatement], found: &mut bool, inside_loop: bool) {

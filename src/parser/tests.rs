@@ -2572,6 +2572,22 @@ fn test_create_procedure_without_body_falls_back() {
 }
 
 #[test]
+fn test_create_procedure_language_before_body() {
+    // LANGUAGE option precedes the AS/IS body marker; body must still be parsed.
+    let sql = "CREATE PROCEDURE p() LANGUAGE plpgsql AS $$ BEGIN INSERT INTO t VALUES (1); COMMIT; END; $$";
+    let stmt = parse_one(sql);
+    match stmt {
+        Statement::CreateProcedure(p) => {
+            assert_eq!(p.name, vec!["p"]);
+            assert_eq!(p.options.language.as_deref(), Some("plpgsql"));
+            let block = p.block.as_ref().expect("expected block to be parsed when LANGUAGE precedes AS");
+            assert_eq!(block.body.len(), 2, "expected COMMIT to be parsed as body statement");
+        }
+        _ => panic!("expected CreateProcedure, got {:?}", stmt),
+    }
+}
+
+#[test]
 fn test_create_function_dollar_quoted_body() {
     let sql = "CREATE FUNCTION foo() RETURNS integer AS $$ BEGIN RETURN 1; END; $$ LANGUAGE plpgsql";
     let stmt = parse_one(sql);

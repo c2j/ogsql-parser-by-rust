@@ -404,6 +404,11 @@ fn classify_statement(stmt: &Statement) -> StatementKind {
         Statement::Merge(_) => StatementKind::Merge,
         Statement::Values(_) => StatementKind::Select,
         Statement::AnonyBlock(_) | Statement::Do(_) => StatementKind::PlBlock,
+        // CREATE FUNCTION/PROCEDURE/PACKAGE BODY carry PL/pgSQL bodies; classify
+        // as PlBlock so PL rules traverse the embedded blocks (issue #296).
+        Statement::CreateFunction(_) | Statement::CreateProcedure(_) | Statement::CreatePackageBody(_) => {
+            StatementKind::PlBlock
+        }
         Statement::Lock(_) => StatementKind::All, // LockStatement is its own category
         Statement::Drop(_) => StatementKind::Ddl,
         Statement::Explain(_) => StatementKind::All,
@@ -418,8 +423,6 @@ fn classify_statement(stmt: &Statement) -> StatementKind {
         | Statement::CreateDatabase(_)
         | Statement::CreateDatabaseLink(_)
         | Statement::CreateTablespace(_)
-        | Statement::CreateFunction(_)
-        | Statement::CreateProcedure(_)
         | Statement::CreateType(_)
         | Statement::AlterIndex(_)
         | Statement::CreatePackage(_)
@@ -533,7 +536,6 @@ fn classify_statement(stmt: &Statement) -> StatementKind {
         | Statement::DropAppWorkloadGroupMapping(_)
         | Statement::Rule(_)
         | Statement::DropRule(_)
-        | Statement::CreatePackageBody(_)
         | Statement::RemovePackage(_)
         | Statement::Shutdown(_)
         | Statement::Barrier(_)
@@ -1089,8 +1091,29 @@ fn collect_selects_from_from<'a>(
     }
 }
 
+/// Return all PL/pgSQL blocks reachable from a statement's PL body (incl. CREATE FUNCTION/PROCEDURE/PACKAGE BODY).
+pub(crate) fn pl_blocks_from_stmt(stmt: &Statement) -> Vec<&crate::ast::plpgsql::PlBlock> {
+    use crate::ast::PackageItem;
+    match stmt {
+        Statement::AnonyBlock(b) => vec![&b.block],
+        Statement::Do(d) => d.block.iter().collect(),
+        Statement::CreateFunction(f) => f.block.iter().collect(),
+        Statement::CreateProcedure(p) => p.block.iter().collect(),
+        Statement::CreatePackageBody(pkg) => pkg
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                PackageItem::Function(f) => f.block.as_ref(),
+                PackageItem::Procedure(p) => p.block.as_ref(),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
 /// Walk a PL/pgSQL block and collect embedded SELECTs.
-fn collect_selects_from_pl_block<'a>(
+pub(crate) fn collect_selects_from_pl_block<'a>(
     block: &'a crate::ast::plpgsql::PlBlock,
     out: &mut Vec<(&'a SelectStatement, SourceLocation)>,
 ) {

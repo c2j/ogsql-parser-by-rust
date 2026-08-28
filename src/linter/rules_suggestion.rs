@@ -149,20 +149,14 @@ fn check_s005(
 }
 
 fn walk_pl_for_type_name(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_decls_for_type_name(&block.declarations, found);
+        if !*found {
+            check_pl_stmts_for_type_name(&block.body, found);
         }
-        _ => return,
-    };
-    check_decls_for_type_name(&block.declarations, found);
-    if !*found {
-        check_pl_stmts_for_type_name(&block.body, found);
+        if *found {
+            return;
+        }
     }
 }
 
