@@ -883,6 +883,40 @@ fn c014_pl_rollback() {
     assert!(has_rule(&w, "C014"), "expected C014 for ROLLBACK in PL block");
 }
 
+// ── C019: COMMIT/ROLLBACK inside loop ──
+
+#[test]
+fn c019_commit_in_loop_warns() {
+    let stmts = parse("DO $$ BEGIN FOR i IN 1..10 LOOP INSERT INTO t VALUES (i); COMMIT; END LOOP; END $$");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C019"), "COMMIT inside LOOP should trigger C019");
+}
+
+#[test]
+fn c019_commit_outside_loop_no_warn() {
+    let stmts = parse("DO $$ BEGIN INSERT INTO t VALUES (1); COMMIT; END $$");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "C019"), "COMMIT outside loop should NOT trigger C019 (C014 covers it)");
+    assert!(has_rule(&w, "C014"), "COMMIT at block level still triggers C014");
+}
+
+#[test]
+fn c019_rollback_in_while_loop_warns() {
+    let stmts = parse("DO $$ BEGIN WHILE x < 10 LOOP ROLLBACK; x := x + 1; END LOOP; END $$");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C019"), "ROLLBACK inside WHILE loop should trigger C019");
+}
+
+#[test]
+fn c019_commit_in_function_loop_warns() {
+    // Enabled by #296 traversal.
+    let stmts = parse(
+        "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN FOR i IN 1..10 LOOP COMMIT; END LOOP; END; $$",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C019"), "COMMIT in function loop should trigger C019");
+}
+
 // ── #296: PL rules traverse CREATE FUNCTION/PROCEDURE/PACKAGE BODY ──
 
 #[test]

@@ -129,6 +129,14 @@ pub fn register(linter: &mut SqlLinter) {
             stmt_kind: StatementKind::Insert,
             check_fn: check_c018,
         },
+        LintRuleEntry {
+            id: "C019",
+            name: "commit-inside-loop",
+            description: "COMMIT/ROLLBACK inside a PL/pgSQL loop breaks transaction atomicity and harms performance",
+            level: WarningLevel::Caution,
+            stmt_kind: StatementKind::PlBlock,
+            check_fn: check_c019,
+        },
     ];
     for rule in rules {
         linter.register(rule);
@@ -825,6 +833,75 @@ fn check_pl_stmts_for_commit_rollback(pl_stmts: &[PlStatement], found: &mut bool
             PlStatement::Loop(l) => check_pl_stmts_for_commit_rollback(&l.body, found),
             PlStatement::While(w) => check_pl_stmts_for_commit_rollback(&w.body, found),
             PlStatement::For(f) => check_pl_stmts_for_commit_rollback(&f.body, found),
+            _ => {}
+        }
+        if *found {
+            return;
+        }
+    }
+}
+
+// ── C019: COMMIT/ROLLBACK inside a PL/pgSQL loop ──
+
+fn check_c019(
+    curr_stmt: &StatementInfo,
+    _stmts: &[StatementInfo],
+    _schema: Option<&crate::analyzer::schema::SchemaMap>,
+    _indexes: Option<&crate::linter::IndexInfo>,
+    _config: &LintConfig,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
+    let loc = stmt_location(curr_stmt);
+    let mut found = false;
+    for block in crate::linter::pl_blocks_from_stmt(&curr_stmt.statement) {
+        check_pl_stmts_for_commit_in_loop(&block.body, &mut found, false);
+        if found {
+            break;
+        }
+    }
+    if found {
+        warnings.push(make_warning(
+            WarningLevel::Caution,
+            "C019",
+            "commit-inside-loop",
+            "\u{5faa}\u{73af}\u{5185} COMMIT/ROLLBACK \u{4f1a}\u{5bfc}\u{81f4}\u{4e8b}\u{52a1}\u{4e0d}\u{539f}\u{5b50}\u{ff0c}\u{4e14}\u{9891}\u{7e41}\u{63d0}\u{4ea4}\u{5f71}\u{54cd}\u{6027}\u{80fd}".into(),
+            Some("\u{5c06} COMMIT/ROLLBACK \u{79fb}\u{51fa}\u{5faa}\u{73af}\u{ff0c}\u{6216}\u{4f7f}\u{7528}\u{6279}\u{91cf}\u{64cd}\u{4f5c}"),
+            loc,
+            None,
+            confidence,
+        ));
+    }
+}
+
+fn check_pl_stmts_for_commit_in_loop(pl_stmts: &[PlStatement], found: &mut bool, inside_loop: bool) {
+    if *found {
+        return;
+    }
+    for s in pl_stmts {
+        match s {
+            PlStatement::Loop(l) => check_pl_stmts_for_commit_in_loop(&l.body, found, true),
+            PlStatement::While(w) => check_pl_stmts_for_commit_in_loop(&w.body, found, true),
+            PlStatement::For(f) => check_pl_stmts_for_commit_in_loop(&f.body, found, true),
+            PlStatement::ForEach(f) => check_pl_stmts_for_commit_in_loop(&f.body, found, true),
+            PlStatement::Commit { .. } | PlStatement::Rollback { .. } if inside_loop => {
+                *found = true;
+                return;
+            }
+            PlStatement::Block(b) => check_pl_stmts_for_commit_in_loop(&b.body, found, inside_loop),
+            PlStatement::If(i) => {
+                check_pl_stmts_for_commit_in_loop(&i.then_stmts, found, inside_loop);
+                for e in &i.elsifs {
+                    check_pl_stmts_for_commit_in_loop(&e.stmts, found, inside_loop);
+                }
+                check_pl_stmts_for_commit_in_loop(&i.else_stmts, found, inside_loop);
+            }
+            PlStatement::Case(c) => {
+                for w in &c.whens {
+                    check_pl_stmts_for_commit_in_loop(&w.stmts, found, inside_loop);
+                }
+                check_pl_stmts_for_commit_in_loop(&c.else_stmts, found, inside_loop);
+            }
             _ => {}
         }
         if *found {
