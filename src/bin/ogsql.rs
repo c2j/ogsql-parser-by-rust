@@ -575,6 +575,7 @@ fn format_sql_to_string(
             select_newline: !no_select_newline,
             logical_operator_newline: !no_logical_newline,
             semicolon_newline: !no_semicolon_newline,
+            ..FormatConfig::default()
         };
         token_formatter::TokenFormatter::with_config(sql, tokens, config).format()
     };

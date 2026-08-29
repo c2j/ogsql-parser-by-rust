@@ -45,6 +45,16 @@ pub struct FormatConfig {
     pub select_newline: bool,
     /// Put WHERE/AND/OR on new lines (default: true)
     pub logical_operator_newline: bool,
+    /// Indentation width (spaces) for PL/SQL block bodies (BEGIN/END,
+    /// PACKAGE BODY members). `None` means fall back to `indent_width`
+    /// (default: None)
+    pub block_indent: Option<usize>,
+    /// Preserve blank lines from the input in the formatted output
+    /// (default: false)
+    pub preserve_blank_lines: bool,
+    /// Insert a blank line between PROCEDURE/FUNCTION definitions inside
+    /// a PACKAGE BODY (default: true)
+    pub procedure_newline: bool,
 }
 
 impl Default for FormatConfig {
@@ -58,6 +68,9 @@ impl Default for FormatConfig {
             semicolon_newline: true,
             select_newline: true,
             logical_operator_newline: true,
+            block_indent: None,
+            preserve_blank_lines: false,
+            procedure_newline: true,
         }
     }
 }
@@ -80,6 +93,7 @@ enum IndentKind {
     UpdateSet,
     WhereCont,
     ParenExpr,
+    Package,
 }
 
 // ── TokenFormatter ─────────────────────────────────────────────────────────────
@@ -169,6 +183,9 @@ impl<'a> TokenFormatter<'a> {
     // ── Indent / newline helpers ───────────────────────────────────────────────
 
     fn flush_pending_line(&mut self) {
+        if self.config.preserve_blank_lines && self.had_blank_line_before() {
+            self.output.push('\n');
+        }
         self.output.push('\n');
         self.emit_indent();
         self.needs_line = false;
@@ -178,6 +195,9 @@ impl<'a> TokenFormatter<'a> {
         if self.needs_line {
             self.flush_pending_line();
         } else if !self.output.is_empty() {
+            if self.config.preserve_blank_lines && self.had_blank_line_before() {
+                self.output.push('\n');
+            }
             self.output.push('\n');
             self.emit_indent();
         }
@@ -190,10 +210,42 @@ impl<'a> TokenFormatter<'a> {
     }
 
     fn emit_indent(&mut self) {
-        let spaces = self.indent_stack.len() * self.config.indent_width;
+        let spaces = self.indent_stack.len() * self.effective_indent_width();
         for _ in 0..spaces {
             self.output.push(' ');
         }
+    }
+
+    /// Indentation width to use for the current nesting level. When
+    /// `block_indent` is configured and the formatter is currently inside a
+    /// PL/SQL block or PACKAGE BODY, it overrides `indent_width`.
+    fn effective_indent_width(&self) -> usize {
+        if let Some(block_indent) = self.config.block_indent {
+            if self.in_pl_or_package_block() {
+                return block_indent;
+            }
+        }
+        self.config.indent_width
+    }
+
+    fn in_pl_or_package_block(&self) -> bool {
+        self.indent_stack.iter().any(|k| {
+            matches!(k, IndentKind::Begin | IndentKind::If | IndentKind::Loop | IndentKind::Case | IndentKind::Package)
+        })
+    }
+
+    /// True when the source contains a blank line between the previous
+    /// token and the current one (used by `preserve_blank_lines`).
+    fn had_blank_line_before(&self) -> bool {
+        if self.pos == 0 || self.pos >= self.tokens.len() {
+            return false;
+        }
+        let prev_end = self.tokens[self.pos - 1].span.end;
+        let cur_start = self.tokens[self.pos].span.start;
+        if cur_start <= prev_end {
+            return false;
+        }
+        self.source[prev_end..cur_start].matches('\n').count() >= 2
     }
 
     fn emit_space(&mut self) {
@@ -208,8 +260,23 @@ impl<'a> TokenFormatter<'a> {
     fn emit_current_token(&mut self) {
         let tws = &self.tokens[self.pos];
         let text = &self.source[tws.span.start..tws.span.end];
-        let transformed = self.transform_text(text, &tws.token);
+        let transformed = self.transform_text_at(text, &tws.token, self.pos);
         self.output.push_str(&transformed);
+    }
+
+    /// Apply keyword casing transformation, unless `pos` follows a `Token::Dot`.
+    ///
+    /// Some keywords (e.g. `NAME`) are also common identifiers. When such a
+    /// token appears right after a `.` (as in `a.name`), it is being used as
+    /// an identifier/member-access, not as an actual SQL keyword, so its
+    /// casing must be preserved instead of being forced to upper/lower case
+    /// (issue #311).
+    fn transform_text_at(&self, text: &str, token: &Token, pos: usize) -> String {
+        let follows_dot = pos > 0 && matches!(&self.tokens[pos - 1].token, Token::Dot);
+        if follows_dot {
+            return text.to_string();
+        }
+        self.transform_text(text, token)
     }
 
     /// Apply keyword casing transformation
@@ -244,7 +311,7 @@ impl<'a> TokenFormatter<'a> {
             let prev = &self.tokens[self.pos - 1].token;
             matches!(prev, Token::LParen | Token::LBracket | Token::Comma | Token::Dot)
         };
-        let text = self.transform_text(&self.source[tws.span.start..tws.span.end], &tws.token);
+        let text = self.transform_text_at(&self.source[tws.span.start..tws.span.end], &tws.token, self.pos);
         let pos = self.pos;
         let _ = tws;
 
@@ -252,7 +319,12 @@ impl<'a> TokenFormatter<'a> {
             self.flush_pending_line();
         }
 
-        if !is_space_rejecting && !prev_rejects_space && !self.output.ends_with(' ') && !self.output.ends_with('\n') {
+        if !is_space_rejecting
+            && !prev_rejects_space
+            && !self.output.is_empty()
+            && !self.output.ends_with(' ')
+            && !self.output.ends_with('\n')
+        {
             self.output.push(' ');
         }
 
@@ -332,6 +404,20 @@ impl<'a> TokenFormatter<'a> {
         while self.indent_stack.last() == Some(&IndentKind::WhereCont) {
             self.indent_stack.pop();
         }
+    }
+
+    /// Detect `CREATE [OR REPLACE] PACKAGE BODY` starting at the current
+    /// (`CREATE`) token position.
+    fn is_create_package_body(&self) -> bool {
+        let mut offset = 1;
+        if matches!(self.peek_token(offset), Some(Token::Keyword(Keyword::OR))) {
+            if !matches!(self.peek_token(offset + 1), Some(Token::Keyword(Keyword::REPLACE))) {
+                return false;
+            }
+            offset += 2;
+        }
+        matches!(self.peek_token(offset), Some(Token::Keyword(Keyword::PACKAGE)))
+            && matches!(self.peek_token(offset + 1), Some(Token::Keyword(Keyword::BODY_P)))
     }
 
     fn is_procedure_or_function_context(&self) -> bool {
@@ -420,6 +506,15 @@ impl<'a> TokenFormatter<'a> {
                     self.emit_current_token();
                     self.pos += 1;
                 }
+                Some(Token::Ident(_)) if self.indent_stack.last() == Some(&IndentKind::Package) => {
+                    self.pop_indent_to(IndentKind::Package);
+                    self.emit_line_start();
+                    self.emit_current_token();
+                    self.pos += 1;
+                    self.emit_space();
+                    self.emit_current_token();
+                    self.pos += 1;
+                }
                 _ => {
                     self.pop_indent_to(IndentKind::Begin);
                     self.emit_line_start();
@@ -471,8 +566,12 @@ impl<'a> TokenFormatter<'a> {
                 self.emit_current_token();
                 self.dml_stmt_active = false;
                 // Pop DML/CTE indent contexts, but keep PL/pgSQL block contexts
-                self.indent_stack
-                    .retain(|k| matches!(k, IndentKind::Begin | IndentKind::If | IndentKind::Loop | IndentKind::Case));
+                self.indent_stack.retain(|k| {
+                    matches!(
+                        k,
+                        IndentKind::Begin | IndentKind::If | IndentKind::Loop | IndentKind::Case | IndentKind::Package
+                    )
+                });
                 if self.config.semicolon_newline {
                     self.needs_line = true;
                 } else {
@@ -654,7 +753,18 @@ impl<'a> TokenFormatter<'a> {
 
             // ── PROCEDURE / FUNCTION ──────────────────────────────────────────
             Token::Keyword(Keyword::PROCEDURE) | Token::Keyword(Keyword::FUNCTION) => {
-                self.emit_line_start();
+                let follows_package_member = self.indent_stack.last() == Some(&IndentKind::Package)
+                    && matches!(self.peek_token_back(1), Some(Token::Semicolon));
+                if follows_package_member && self.config.procedure_newline {
+                    if self.needs_line {
+                        self.output.push('\n');
+                        self.needs_line = false;
+                    }
+                    self.output.push('\n');
+                    self.emit_indent();
+                } else {
+                    self.emit_line_start();
+                }
                 self.emit_current_token();
                 self.pos += 1;
             }
@@ -707,6 +817,8 @@ impl<'a> TokenFormatter<'a> {
             Token::Keyword(Keyword::RETURN) | Token::Keyword(Keyword::EXECUTE) => {
                 if self.in_pl_block() {
                     self.emit_line_start();
+                } else {
+                    self.emit_space();
                 }
                 self.emit_current_token();
                 self.emit_space();
@@ -723,7 +835,7 @@ impl<'a> TokenFormatter<'a> {
                 self.pos += 1;
             }
 
-            // ── CREATE TABLE ─────────────────────────────────────────────────
+            // ── CREATE TABLE / CREATE PACKAGE BODY ────────────────────────────
             Token::Keyword(Keyword::CREATE) => {
                 // Check if followed by TABLE
                 if let Some(Token::Keyword(Keyword::TABLE)) = next_token {
@@ -732,6 +844,11 @@ impl<'a> TokenFormatter<'a> {
                     self.pos += 1;
                     // Set flag to detect opening paren for column list
                     self.handle_create_table();
+                } else if self.is_create_package_body() {
+                    self.emit_line_start();
+                    self.emit_current_token();
+                    self.pos += 1;
+                    self.indent_stack.push(IndentKind::Package);
                 } else {
                     self.emit_default_token();
                 }
@@ -1080,6 +1197,38 @@ mod tests {
     }
 
     #[test]
+    fn test_keyword_case_preserves_identifiers() {
+        // Issue #311: `name` is in the keyword list (Keyword::NAME_P), so when it
+        // appears as a column identifier after a dot (e.g. `a.name`), it must NOT
+        // be case-transformed like a real keyword.
+        let config_upper = FormatConfig { keyword_case: KeywordCase::Upper, ..Default::default() };
+        let input_upper = "SELECT a.id, a.name FROM users";
+        let output_upper = format_sql_with(input_upper, config_upper);
+        assert!(output_upper.contains("a.name"), "identifier after dot must be preserved: {output_upper:?}");
+        assert!(!output_upper.contains("a.NAME"), "identifier after dot must not be uppercased: {output_upper:?}");
+        assert!(
+            output_upper.contains("SELECT") && output_upper.contains("FROM"),
+            "keywords uppercased: {output_upper:?}"
+        );
+
+        let config_upper2 = FormatConfig { keyword_case: KeywordCase::Upper, ..Default::default() };
+        let input_lower = "select a.id, a.name from users";
+        let output_upper2 = format_sql_with(input_lower, config_upper2);
+        assert!(output_upper2.contains("a.name"), "identifier after dot must be preserved: {output_upper2:?}");
+        assert!(!output_upper2.contains("a.NAME"), "identifier after dot must not be uppercased: {output_upper2:?}");
+        assert!(
+            output_upper2.contains("SELECT") && output_upper2.contains("FROM"),
+            "keywords uppercased: {output_upper2:?}"
+        );
+
+        let config_lower = FormatConfig { keyword_case: KeywordCase::Lower, ..Default::default() };
+        let input_lower_case = "SELECT a.id, a.name FROM users";
+        let output_lower = format_sql_with(input_lower_case, config_lower);
+        assert!(output_lower.contains("a.name"), "identifier after dot must be preserved: {output_lower:?}");
+        assert!(output_lower.contains("select") && output_lower.contains("from"), "keywords lowered: {output_lower:?}");
+    }
+
+    #[test]
     fn test_uppercase_keywords_compat() {
         let config = FormatConfig { uppercase_keywords: true, ..Default::default() };
         let input = "select id from users";
@@ -1195,6 +1344,153 @@ mod tests {
         assert!(output.contains("FUNCTION my_func"), "Function header: {:?}", output);
         assert!(output.contains("IS\nBEGIN"), "IS -> BEGIN: {:?}", output);
         assert!(output.contains("RETURN p1 + 1;"), "Return statement: {:?}", output);
+    }
+
+    // ── PACKAGE BODY formatting (issue #304) ────────────────────────────────────
+
+    #[test]
+    fn test_plsql_package_body_formatting() {
+        let input = "CREATE OR REPLACE PACKAGE BODY test_pkg IS\n\
+PROCEDURE do_something(p_id IN NUMBER) IS\n\
+BEGIN\n\
+  INSERT INTO log_table VALUES(p_id, now());\n\
+  COMMIT;\n\
+END;\n\
+FUNCTION get_name(p_id IN NUMBER) RETURN VARCHAR2 IS\n\
+BEGIN\n\
+  RETURN 'name';\n\
+END;\n\
+END test_pkg;";
+        let output = format_sql(input);
+
+        // 1. No leading whitespace on first line.
+        assert!(
+            !output.starts_with(' ') && !output.starts_with('\n'),
+            "First line must not have leading whitespace: {:?}",
+            output
+        );
+
+        // 2. PROCEDURE/FUNCTION indented inside PACKAGE BODY (2 spaces).
+        assert!(
+            output.contains("\n  PROCEDURE do_something"),
+            "PROCEDURE should be indented inside PACKAGE BODY: {:?}",
+            output
+        );
+        assert!(
+            output.contains("\n  FUNCTION get_name"),
+            "FUNCTION should be indented inside PACKAGE BODY: {:?}",
+            output
+        );
+
+        // 3. Blank line between PROCEDURE and FUNCTION definitions.
+        assert!(
+            output.contains("\n\n  FUNCTION get_name"),
+            "Expected blank line before FUNCTION following PROCEDURE END;: {:?}",
+            output
+        );
+
+        // 4. RETURN has a preceding space (not `)RETURN`).
+        assert!(!output.contains(")RETURN"), "Missing space before RETURN: {:?}", output);
+        assert!(output.contains(") RETURN VARCHAR2"), "Space before RETURN VARCHAR2: {:?}", output);
+
+        // BEGIN/END contents still indented as before.
+        assert!(output.contains("INSERT INTO log_table"), "INSERT preserved: {:?}", output);
+        assert!(output.contains("COMMIT;"), "COMMIT preserved: {:?}", output);
+        assert!(output.contains("RETURN 'name';"), "RETURN 'name' preserved: {:?}", output);
+    }
+
+    // ── PL/SQL formatting options (issue #305, Phase 1) ─────────────────────────
+
+    #[test]
+    fn test_format_config_plsql_defaults() {
+        let config = FormatConfig::default();
+        assert_eq!(config.block_indent, None);
+        assert!(!config.preserve_blank_lines);
+        assert!(config.procedure_newline);
+    }
+
+    const PLSQL_PACKAGE_BODY_INPUT: &str = "CREATE OR REPLACE PACKAGE BODY test_pkg IS\n\
+PROCEDURE do_something(p_id IN NUMBER) IS\n\
+BEGIN\n\
+  INSERT INTO log_table VALUES(p_id, now());\n\
+  COMMIT;\n\
+END;\n\
+FUNCTION get_name(p_id IN NUMBER) RETURN VARCHAR2 IS\n\
+BEGIN\n\
+  RETURN 'name';\n\
+END;\n\
+END test_pkg;";
+
+    #[test]
+    fn test_block_indent_overrides_pl_block_indentation() {
+        let config = FormatConfig { block_indent: Some(4), ..Default::default() };
+        let output = format_sql_with(PLSQL_PACKAGE_BODY_INPUT, config);
+
+        // PROCEDURE/FUNCTION are one level deep inside PACKAGE BODY -> 4 spaces.
+        assert!(
+            output.contains("\n    PROCEDURE do_something"),
+            "PROCEDURE should use block_indent (4 spaces): {:?}",
+            output
+        );
+        assert!(
+            output.contains("\n    FUNCTION get_name"),
+            "FUNCTION should use block_indent (4 spaces): {:?}",
+            output
+        );
+
+        // Statements inside BEGIN...END are two levels deep (Package + Begin) -> 8 spaces.
+        assert!(
+            output.contains("\n        INSERT INTO log_table"),
+            "INSERT inside BEGIN should use 2x block_indent (8 spaces): {:?}",
+            output
+        );
+        assert!(
+            output.contains("\n        RETURN 'name';"),
+            "RETURN inside BEGIN should use 2x block_indent (8 spaces): {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_procedure_newline_false_suppresses_blank_line() {
+        let config = FormatConfig { procedure_newline: false, ..Default::default() };
+        let output = format_sql_with(PLSQL_PACKAGE_BODY_INPUT, config);
+
+        assert!(
+            !output.contains("\n\n  FUNCTION get_name"),
+            "No blank line should precede FUNCTION when procedure_newline=false: {:?}",
+            output
+        );
+        assert!(
+            output.contains("END;\n  FUNCTION get_name"),
+            "FUNCTION should still start on its own line: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_preserve_blank_lines_keeps_blank_line_between_statements() {
+        let input = "SELECT a FROM t;\n\nSELECT b FROM t2;";
+
+        let preserved = format_sql_with(
+            input,
+            FormatConfig { preserve_blank_lines: true, select_newline: false, ..Default::default() },
+        );
+        assert!(
+            preserved.contains("t;\n\nSELECT b"),
+            "Blank line between statements should be preserved: {:?}",
+            preserved
+        );
+
+        let collapsed = format_sql_with(
+            input,
+            FormatConfig { preserve_blank_lines: false, select_newline: false, ..Default::default() },
+        );
+        assert!(
+            !collapsed.contains("t;\n\nSELECT b"),
+            "Without preserve_blank_lines, blank line should be collapsed: {:?}",
+            collapsed
+        );
     }
 
     // ── PL/pgSQL enhanced ──────────────────────────────────────────────────────
