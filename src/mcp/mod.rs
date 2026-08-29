@@ -9,15 +9,20 @@ use rmcp::tool;
 use rmcp::tool_router;
 use serde::Deserialize;
 
-use crate::linter::{build_lint_summary, Confidence, LintConfig, SqlLinter};
+use crate::linter::{build_lint_summary, Confidence, LintConfig, SqlLinter, SqlWarning};
 use crate::token_formatter::{CommaStyle, FormatConfig, KeywordCase, TokenFormatter};
 
 // ── Parameter types ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ParseParams {
-    /// SQL text to parse
+    /// SQL text to parse (mutually exclusive with `file_path`; exactly one must be set)
+    #[serde(default)]
     pub sql: String,
+    /// Path to a SQL file to parse instead of inline `sql` (mutually exclusive with `sql`).
+    /// Supported extensions: .sql, .pck, .fnc, .prc
+    #[serde(default)]
+    pub file_path: Option<String>,
     /// Whether to preserve comments in output
     #[serde(default)]
     pub preserve_comments: bool,
@@ -30,6 +35,9 @@ pub struct ParseParams {
 pub struct TokenizeParams {
     /// SQL text to tokenize
     pub sql: String,
+    /// Return aggregated statistics instead of the full token list
+    #[serde(default)]
+    pub summary: bool,
 }
 
 fn default_indent() -> usize {
@@ -41,8 +49,13 @@ fn default_line_width() -> usize {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FormatParams {
-    /// SQL text to format
+    /// SQL text to format (mutually exclusive with `file_path`; exactly one must be set)
+    #[serde(default)]
     pub sql: String,
+    /// Path to a SQL file to format instead of inline `sql` (mutually exclusive with `sql`).
+    /// Supported extensions: .sql, .pck, .fnc, .prc
+    #[serde(default)]
+    pub file_path: Option<String>,
     /// Number of spaces per indentation level
     #[serde(default = "default_indent")]
     pub indent: usize,
@@ -62,8 +75,13 @@ pub struct FormatParams {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ValidateParams {
-    /// SQL text to validate
+    /// SQL text to validate (mutually exclusive with `file_path`; exactly one must be set)
+    #[serde(default)]
     pub sql: String,
+    /// Path to a SQL file to validate instead of inline `sql` (mutually exclusive with `sql`).
+    /// Supported extensions: .sql, .pck, .fnc, .prc
+    #[serde(default)]
+    pub file_path: Option<String>,
     /// Enable SQL anti-pattern linting
     #[serde(default)]
     pub lint: bool,
@@ -87,6 +105,9 @@ pub struct ParseXmlParams {
     /// Inline Java source map: {relative_path: source_code} for parameter type inference
     #[serde(default)]
     pub java_sources: Option<std::collections::HashMap<String, String>>,
+    /// Enable SQL anti-pattern linting on extracted SQL statements
+    #[serde(default)]
+    pub lint: bool,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -99,6 +120,33 @@ pub struct ParseJavaParams {
     /// Extra variable name patterns for SQL detection (e.g. ["QUERY", "STMT"])
     #[serde(default)]
     pub extra_sql_var_patterns: Vec<String>,
+    /// Enable SQL anti-pattern linting on extracted SQL statements
+    #[serde(default)]
+    pub lint: bool,
+}
+
+const ALLOWED_SQL_EXTENSIONS: [&str; 4] = ["sql", "pck", "fnc", "prc"];
+
+fn read_sql_file(path: &str) -> Result<String, String> {
+    let p = std::path::Path::new(path);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !ALLOWED_SQL_EXTENSIONS.contains(&ext.as_str()) {
+        return Err(format!(
+            "Unsupported file extension for file_path '{}': expected one of .sql, .pck, .fnc, .prc",
+            path
+        ));
+    }
+    std::fs::read_to_string(p).map_err(|e| format!("Failed to read file_path '{}': {}", path, e))
+}
+
+/// Resolve the effective SQL text from mutually exclusive `sql` / `file_path` params.
+fn resolve_sql_input(sql: &str, file_path: &Option<String>) -> Result<String, String> {
+    match file_path {
+        Some(_) if !sql.is_empty() => Err("Provide either `sql` or `file_path`, not both".to_string()),
+        Some(path) => read_sql_file(path),
+        None if sql.is_empty() => Err("Must provide either `sql` or `file_path`".to_string()),
+        None => Ok(sql.to_string()),
+    }
 }
 
 // ── Server struct ────────────────────────────────────────────────────────────
@@ -111,7 +159,14 @@ pub struct OgsqlServer;
 #[tool_router(server_handler)]
 impl OgsqlServer {
     #[tool(description = "Parse SQL into structured AST JSON with error reports and query fingerprints")]
-    fn parse(&self, Parameters(ParseParams { sql, preserve_comments, lint }): Parameters<ParseParams>) -> String {
+    fn parse(
+        &self,
+        Parameters(ParseParams { sql, file_path, preserve_comments, lint }): Parameters<ParseParams>,
+    ) -> String {
+        let sql = match resolve_sql_input(&sql, &file_path) {
+            Ok(s) => s,
+            Err(e) => return format!("{{\"error\": \"{}\"}}", e),
+        };
         let options = crate::ParseOptions { preserve_comments, mybatis_params: false };
         let output = crate::Parser::parse_sql_with_options(&sql, options);
 
@@ -160,24 +215,30 @@ impl OgsqlServer {
         serde_json::to_string_pretty(&out).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
     }
 
-    #[tool(description = "Tokenize SQL into a list of typed tokens with line/column positions")]
-    fn tokenize(&self, Parameters(TokenizeParams { sql }): Parameters<TokenizeParams>) -> String {
+    #[tool(
+        description = "Tokenize SQL into a list of typed tokens with line/column positions, or (summary=true) aggregated statistics"
+    )]
+    fn tokenize(&self, Parameters(TokenizeParams { sql, summary }): Parameters<TokenizeParams>) -> String {
         match crate::Tokenizer::new(&sql).tokenize() {
             Ok(tokens) => {
-                let list: Vec<serde_json::Value> = tokens
-                    .iter()
-                    .map(|t| {
-                        let (token_type, value) = token_display(t);
-                        serde_json::json!({
-                            "type": token_type,
-                            "value": value,
-                            "line": t.location.line,
-                            "column": t.location.column,
+                let out = if summary {
+                    build_token_summary(&tokens)
+                } else {
+                    let list: Vec<serde_json::Value> = tokens
+                        .iter()
+                        .map(|t| {
+                            let (token_type, value) = token_display(t);
+                            serde_json::json!({
+                                "type": token_type,
+                                "value": value,
+                                "line": t.location.line,
+                                "column": t.location.column,
+                            })
                         })
-                    })
-                    .collect();
-                serde_json::to_string_pretty(&serde_json::json!({"tokens": list}))
-                    .unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
+                        .collect();
+                    serde_json::json!({"tokens": list})
+                };
+                serde_json::to_string_pretty(&out).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
             }
             Err(e) => format!("{{\"error\": \"{}\"}}", e),
         }
@@ -186,10 +247,14 @@ impl OgsqlServer {
     #[tool(description = "Format SQL with standardized keyword casing and indentation")]
     fn format(
         &self,
-        Parameters(FormatParams { sql, indent, keyword_case, comma_style, line_width, uppercase }): Parameters<
+        Parameters(FormatParams { sql, file_path, indent, keyword_case, comma_style, line_width, uppercase }): Parameters<
             FormatParams,
         >,
     ) -> String {
+        let sql = match resolve_sql_input(&sql, &file_path) {
+            Ok(s) => s,
+            Err(e) => return format!("{{\"error\": \"{}\"}}", e),
+        };
         let tokens = match crate::Tokenizer::new(&sql).preserve_comments(true).tokenize() {
             Ok(t) => t,
             Err(e) => return format!("{{\"error\": \"{}\"}}", e),
@@ -227,7 +292,11 @@ impl OgsqlServer {
     }
 
     #[tool(description = "Validate SQL syntax and report errors and warnings")]
-    fn validate(&self, Parameters(ValidateParams { sql, lint }): Parameters<ValidateParams>) -> String {
+    fn validate(&self, Parameters(ValidateParams { sql, file_path, lint }): Parameters<ValidateParams>) -> String {
+        let sql = match resolve_sql_input(&sql, &file_path) {
+            Ok(s) => s,
+            Err(e) => return format!("{{\"error\": \"{}\"}}", e),
+        };
         let output = crate::Parser::parse_sql_with_options(
             &sql,
             crate::ParseOptions { preserve_comments: false, mybatis_params: false },
@@ -326,8 +395,10 @@ impl OgsqlServer {
     )]
     fn parse_xml(
         &self,
-        #[cfg(feature = "java")] Parameters(ParseXmlParams { xml, java_src, java_sources }): Parameters<ParseXmlParams>,
-        #[cfg(not(feature = "java"))] Parameters(ParseXmlParams { xml }): Parameters<ParseXmlParams>,
+        #[cfg(feature = "java")] Parameters(ParseXmlParams { xml, java_src, java_sources, lint }): Parameters<
+            ParseXmlParams,
+        >,
+        #[cfg(not(feature = "java"))] Parameters(ParseXmlParams { xml, lint }): Parameters<ParseXmlParams>,
     ) -> String {
         #[cfg(feature = "java")]
         let (java_roots, tmp_dir) = {
@@ -367,21 +438,77 @@ impl OgsqlServer {
             let _ = std::fs::remove_dir_all(&tmp);
         }
 
-        serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
+        let mut out = serde_json::to_value(&result).expect("ParsedMapper is serializable");
+        if lint {
+            attach_ibatis_lint(&mut out, &result.statements);
+        }
+
+        serde_json::to_string_pretty(&out).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
     }
 
     #[tool(description = "Extract embedded SQL from Java source files (string literals, annotations, method calls)")]
     fn parse_java(
         &self,
-        Parameters(ParseJavaParams { source, extra_sql_methods, extra_sql_var_patterns }): Parameters<ParseJavaParams>,
+        Parameters(ParseJavaParams { source, extra_sql_methods, extra_sql_var_patterns, lint }): Parameters<
+            ParseJavaParams,
+        >,
     ) -> String {
         let config = crate::java::JavaExtractConfig { extra_sql_methods, extra_sql_var_patterns };
         let result = crate::java::extract_sql_from_java(&source, "<mcp-input>", &config);
-        serde_json::to_string_pretty(&result).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
+
+        let mut out = serde_json::to_value(&result).expect("JavaExtractResult is serializable");
+        if lint {
+            attach_java_lint(&mut out, &result.extractions);
+        }
+
+        serde_json::to_string_pretty(&out).unwrap_or_else(|e| format!("{{\"error\": \"{}\"}}", e))
     }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+fn attach_ibatis_lint(out: &mut serde_json::Value, statements: &[crate::ibatis::ParsedStatement]) {
+    let linter = SqlLinter::with_default_rules(LintConfig::default());
+    let mut all_warnings: Vec<SqlWarning> = Vec::new();
+
+    if let Some(stmt_values) = out.get_mut("statements").and_then(|v| v.as_array_mut()) {
+        for (stmt_value, orig) in stmt_values.iter_mut().zip(statements.iter()) {
+            let Some((ref stmts, ref _errors)) = orig.parse_result else { continue };
+            let warnings = linter.lint(stmts, None, Confidence::Full);
+            // Keep the original parse_result tuple shape ([statements, errors])
+            // and add lint_warnings as a separate field alongside it,
+            // matching the pattern used by attach_java_lint.
+            if let Some(stmt_obj) = stmt_value.as_object_mut() {
+                stmt_obj.insert("lint_warnings".to_string(), serde_json::json!(warnings));
+            }
+            all_warnings.extend(warnings);
+        }
+    }
+
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("lint_summary".to_string(), build_lint_summary(&all_warnings));
+    }
+}
+
+fn attach_java_lint(out: &mut serde_json::Value, extractions: &[crate::java::ExtractedSql]) {
+    let linter = SqlLinter::with_default_rules(LintConfig::default());
+    let mut all_warnings: Vec<SqlWarning> = Vec::new();
+
+    if let Some(extraction_values) = out.get_mut("extractions").and_then(|v| v.as_array_mut()) {
+        for (extraction_value, orig) in extraction_values.iter_mut().zip(extractions.iter()) {
+            let Some(ref parse_result) = orig.parse_result else { continue };
+            let warnings = linter.lint(&parse_result.statements, None, Confidence::Full);
+            if let Some(pr_obj) = extraction_value.get_mut("parse_result").and_then(|v| v.as_object_mut()) {
+                pr_obj.insert("lint_warnings".to_string(), serde_json::json!(warnings));
+            }
+            all_warnings.extend(warnings);
+        }
+    }
+
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert("lint_summary".to_string(), build_lint_summary(&all_warnings));
+    }
+}
 
 fn token_display(t: &crate::TokenWithSpan) -> (String, String) {
     use crate::Token;
@@ -405,6 +532,68 @@ fn token_display(t: &crate::TokenWithSpan) -> (String, String) {
         Token::Comment(s) => ("Comment".into(), s.clone()),
         other => ("Other".into(), format!("{:?}", other)),
     }
+}
+
+fn build_token_summary(tokens: &[crate::TokenWithSpan]) -> serde_json::Value {
+    use crate::{Keyword, Token};
+    use std::collections::BTreeMap;
+
+    let mut by_type: BTreeMap<String, usize> = BTreeMap::new();
+    let mut tables: Vec<String> = Vec::new();
+    let mut columns: Vec<String> = Vec::new();
+    let mut functions: Vec<String> = Vec::new();
+    let mut has_subquery = false;
+    let mut has_join = false;
+    let mut prev_was_table_keyword = false;
+
+    for (i, t) in tokens.iter().enumerate() {
+        let (token_type, _) = token_display(t);
+        *by_type.entry(token_type).or_insert(0) += 1;
+
+        match &t.token {
+            Token::Keyword(k) => {
+                if matches!(k, Keyword::JOIN) {
+                    has_join = true;
+                }
+                if matches!(k, Keyword::FROM | Keyword::JOIN) {
+                    prev_was_table_keyword = true;
+                    continue;
+                }
+                if matches!(tokens.get(i + 1).map(|next| &next.token), Some(Token::LParen)) {
+                    let name = format!("{:?}", k).to_lowercase();
+                    if !functions.contains(&name) {
+                        functions.push(name);
+                    }
+                }
+            }
+            Token::Ident(s) => {
+                if prev_was_table_keyword {
+                    if !tables.contains(s) {
+                        tables.push(s.clone());
+                    }
+                } else if !columns.contains(s) {
+                    columns.push(s.clone());
+                }
+            }
+            Token::LParen => {
+                if matches!(tokens.get(i + 1).map(|next| &next.token), Some(Token::Keyword(Keyword::SELECT))) {
+                    has_subquery = true;
+                }
+            }
+            _ => {}
+        }
+        prev_was_table_keyword = false;
+    }
+
+    serde_json::json!({
+        "total_tokens": tokens.len(),
+        "by_type": by_type,
+        "tables": tables,
+        "columns": columns,
+        "functions": functions,
+        "has_subquery": has_subquery,
+        "has_join": has_join,
+    })
 }
 
 fn is_warning(e: &crate::ParserError) -> bool {
