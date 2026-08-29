@@ -5,9 +5,9 @@
 本仓库采用测试驱动开发。一次循环只锁定一个行为：先写会失败的测试（Red），再写最小实现让它通过（Green），最后在测试全绿的前提下重构（Refactor）。探索草稿不得直接合入，必须按本文件用 TDD 重写。
 
 ### 先读再改
-1. 确认改动落在哪个 crate（本仓库是 Cargo workspace，见「仓库地图」）。
-2. 只用本文件列出的 cargo 命令；不要发明裸 `cargo update`、不要擅自切换 toolchain（以 `rust-toolchain.toml` 为准）。
-3. 先跑与改动相关的最小测试；提交前再跑 workspace 门禁（fmt + clippy + test）。
+1. 本仓库是**单 crate**（根 `Cargo.toml` 只有 `[package]`，没有 `[workspace]`）；`ogsql` / `ogsql-mcp` / `sqlsmith-harness` 是同一 package 的 `[[bin]]` 目标，靠 feature 开关切分。先确认改动落在哪个模块、哪个 feature 下。
+2. 只用本文件列出的 cargo 命令；不要发明裸 `cargo update`。本仓库没有 `rust-toolchain.toml`，日常 TDD 一律用 `stable`；`+nightly` 只用于 Win7 发版交叉编译（见「Windows 7 Build」），与 TDD 门禁无关。
+3. 先跑与改动相关的最小测试；提交前再跑全量门禁（fmt + clippy + test + audit，见「命令」）。
 4. 完成一个循环后按「完成标准与汇报」汇报，不要只说「做完了」。
 
 ### Never / Ask first / Always
@@ -22,10 +22,10 @@
 - 把探索草稿、临时脚本、调试 `dbg!`/`println!` 留在主代码
 
 **Ask first**
-- 改人类已有测试（含断言、fixture、snapshot）
-- 新增运行时依赖、`unsafe`、新的 workspace crate、新的外部服务
+- 改人类已有测试（含断言、fixture、golden 期望值）
+- 新增运行时依赖、`unsafe`、新的 feature flag 或 `[[bin]]` 目标、新的外部服务
 - 为不可测代码做超出当前改动路径的重构
-- 接受/更新 snapshot（insta / golden file）且行为含义发生变化
+- 接受/更新 golden file 或固定 fixture 的期望值，且行为含义发生变化
 - 关闭 clippy lint、新增 `#[allow]`
 
 **Always**
@@ -49,13 +49,13 @@
 
 **Green** — 只写让当前失败测试通过的最少代码。禁止删掉/改掉失败测试、一次引入多个未验证变更、用更宽断言或 `unwrap()` 换绿。
 
-**Refactor** — 相关测试全绿后才重构；重构后立刻跑同一组测试；范围限于当前 crate，不扩散到无关 crate。
+**Refactor** — 相关测试全绿后才重构；重构后立刻跑同一组测试；范围限于当前改动路径，不扩散到无关模块。
 
 **探索 vs 实现** — 需求或方案不清可写草稿验证；草稿不得合并；方案确定后必须走 TDD 重写。
 
 ### 遗留代码与接缝
 
-**特征测试** — 锁定现有行为，不是证明它正确。用固定 fixture 或 `insta` snapshot。更新 snapshot 必须在汇报里写清 diff 含义；默认不接受「看起来差不多」。
+**特征测试** — 锁定现有行为，不是证明它正确。本仓库**未引入 `insta`**，用固定 fixture + 显式断言，或与 golden 文件逐字比对。更新期望值必须在汇报里写清 diff 含义；默认不接受「看起来差不多」。
 
 **接缝（优先顺序，靠后的更差）**
 1. trait + 泛型或 `impl Trait`，测试用假类型
@@ -74,7 +74,7 @@
 | 文档测试 | `///` 示例 | 公共 API 必须可运行；禁止滥用 `no_run` |
 | CLI/二进制 | 项目惯用方式 | 退出码与 stdout 契约 |
 | 不变量 | `proptest`（项目已用时） | 往返解析、幂等、单调性 |
-| 特征/快照 | `insta` 或固定 fixture | 遗留输出；接受 snapshot 必须说明 |
+| 特征/golden | 固定 fixture（本仓库未引入 `insta`） | 遗留输出；更新期望值必须说明 |
 
 不要把本该测公共契约的内容塞进 `#[cfg(test)]` 去读私有字段。
 
@@ -85,7 +85,7 @@ Rust 的 Red 允许是：测试引用了尚不存在的类型/函数导致编译
 - 无必要 `unsafe`；有则必须 `SAFETY` 注释
 - 一次性 `cargo update` 整个 lockfile
 - 用 `#[allow(...)]` 静默应修复的 lint
-- 为绿而改 snapshot 却不解释行为是否应该变
+- 为绿而改 golden/期望值却不解释行为是否应该变
 
 ### 命令
 
@@ -106,7 +106,9 @@ cargo audit
 
 Win7 交叉编译（nightly + `-Zbuild-std`）与日常 TDD 门禁无关，仅在发版时用。
 
-循环内只跑受影响 crate；提交前再 workspace。
+> 以上门禁与 `.github/workflows/ci.yml` 逐条一致（fmt → clippy → test → audit），可原样复制执行。
+
+循环内用 `<test_name>` 过滤；提交前跑全量 `--all-features` 门禁。
 
 ### 完成标准与汇报
 
@@ -127,7 +129,7 @@ Win7 交叉编译（nightly + `-Zbuild-std`）与日常 TDD 门禁无关，仅�
 ### 质量判断（自我检查）
 - 这条测试在实现写错时会失败吗？
 - 我是否在测行为，而不是私有实现细节？
-- 我是否用 skip、更宽断言、unwrap、snapshot 盲收换绿？
+- 我是否用 skip、更宽断言、unwrap、golden 盲收换绿？
 - 命令是否来自本文件，而不是我编的？
 
 
