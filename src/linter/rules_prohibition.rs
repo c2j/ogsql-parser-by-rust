@@ -19,7 +19,9 @@ pub fn register(linter: &mut SqlLinter) {
             name: "select-star",
             description: "SELECT * in nested queries only; outer-most SELECT * acceptable, nested subqueries must use explicit column lists",
             level: WarningLevel::Prohibition,
-            stmt_kind: StatementKind::Dml,
+            // All (was Dml): also dispatch on PL-block statements so SELECT *
+            // inside CREATE FUNCTION/PROCEDURE/PACKAGE BODY is caught (#296).
+            stmt_kind: StatementKind::All,
             check_fn: check_r001,
         },
         LintRuleEntry {
@@ -51,7 +53,8 @@ pub fn register(linter: &mut SqlLinter) {
             name: "implicit-type-conversion",
             description: "Implicit type conversion in WHERE may cause index invalidation",
             level: WarningLevel::Prohibition,
-            stmt_kind: StatementKind::Dml,
+            // All (was Dml): also dispatch on PL-block statements (#296).
+            stmt_kind: StatementKind::All,
             check_fn: check_r005,
         },
         LintRuleEntry {
@@ -59,7 +62,8 @@ pub fn register(linter: &mut SqlLinter) {
             name: "function-on-where-column",
             description: "Function wrapping column in WHERE clauses defeats index usage",
             level: WarningLevel::Prohibition,
-            stmt_kind: StatementKind::Dml,
+            // All (was Dml): also dispatch on PL-block statements (#296).
+            stmt_kind: StatementKind::All,
             check_fn: check_r006,
         },
         LintRuleEntry {
@@ -67,7 +71,8 @@ pub fn register(linter: &mut SqlLinter) {
             name: "like-leading-wildcard",
             description: "LIKE with leading wildcard prevents index usage and triggers full table scan",
             level: WarningLevel::Prohibition,
-            stmt_kind: StatementKind::Dml,
+            // All (was Dml): also dispatch on PL-block statements (#296).
+            stmt_kind: StatementKind::All,
             check_fn: check_r007,
         },
         LintRuleEntry {
@@ -109,6 +114,14 @@ pub fn register(linter: &mut SqlLinter) {
             level: WarningLevel::Prohibition,
             stmt_kind: StatementKind::Select,
             check_fn: check_r012,
+        },
+        LintRuleEntry {
+            id: "R013",
+            name: "implicit-join",
+            description: "Oracle-style comma-separated FROM (implicit join) hurts readability; use ANSI JOIN",
+            level: WarningLevel::Prohibition,
+            stmt_kind: StatementKind::Select,
+            check_fn: check_r013,
         },
     ];
     for rule in rules {
@@ -296,20 +309,19 @@ fn check_r005(
     };
 
     let loc = stmt_location(curr_stmt);
-    // Handle non-SELECT/UPDATE/DELETE statements with fallback check
-    if !matches!(curr_stmt.statement, Statement::Select(_) | Statement::Update(_) | Statement::Delete(_)) {
-        let Some(wc) = extract_where_clause(&curr_stmt.statement) else { return };
-        check_r005_fallback(wc, loc, confidence, warnings);
-        return;
+    for (where_clause, tables) in where_contexts(&curr_stmt.statement) {
+        r005_check_where(where_clause, tables, schema, loc, confidence, warnings);
     }
-    let (where_clause, tables) = match &curr_stmt.statement {
-        Statement::Select(s) => (s.where_clause.as_ref(), &s.from),
-        Statement::Update(s) => (s.where_clause.as_ref(), &s.tables),
-        Statement::Delete(s) => (s.where_clause.as_ref(), &s.tables),
-        _ => unreachable!(),
-    };
-    let Some(where_clause) = where_clause else { return };
+}
 
+fn r005_check_where(
+    where_clause: &Expr,
+    tables: &[crate::ast::TableRef],
+    schema: &crate::analyzer::schema::SchemaMap,
+    loc: crate::token::SourceLocation,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
     let col_types = build_column_type_map(schema, tables);
 
     let mut found = false;
@@ -350,39 +362,6 @@ fn check_r005(
     }
 }
 
-fn check_r005_fallback(
-    where_clause: &Expr,
-    loc: crate::token::SourceLocation,
-    confidence: Confidence,
-    warnings: &mut Vec<SqlWarning>,
-) {
-    let mut found = false;
-    walk_expr(where_clause, &mut |e| {
-        if found {
-            return false;
-        }
-        if let Expr::BinaryOp { left, right, .. } = e {
-            let l_lit = matches!(**left, Expr::Literal(_));
-            let r_lit = matches!(**right, Expr::Literal(_));
-            let l_col = matches!(**left, Expr::ColumnRef(_));
-            let r_col = matches!(**right, Expr::ColumnRef(_));
-            if (l_lit && r_col) || (l_col && r_lit) {
-                found = true;
-                return false;
-            }
-        }
-        true
-    });
-    if found {
-        warnings.push(make_warning(
-                    WarningLevel::Prohibition, "R005", "implicit-type-conversion",
-                    "WHERE \u{4e2d}\u{53ef}\u{80fd}\u{5b58}\u{5728}\u{9690}\u{5f0f}\u{7c7b}\u{578b}\u{8f6c}\u{6362}\u{ff08}\u{9700}\u{7ed3}\u{5408}\u{5b57}\u{6bb5}\u{7c7b}\u{578b}\u{786e}\u{8ba4}\u{ff09}".into(),
-                    Some("\u{663e}\u{5f0f}\u{6dfb}\u{52a0}\u{7c7b}\u{578b}\u{8f6c}\u{6362}\u{ff0c}\u{907f}\u{514d}\u{9690}\u{5f0f}\u{8f6c}\u{6362}\u{5bfc}\u{81f4}\u{7d22}\u{5f15}\u{5931}\u{6548}"), loc,
-                    Some("WHERE \u{89c4}\u{8303}"), confidence,
-                ));
-    }
-}
-
 // R006: Function wrapping column in WHERE (index-killing pattern)
 const SAFE_FUNCTIONS_ON_COLUMNS: &[&str] = &["coalesce", "nvl", "nvl2", "ifnull", "isnull", "greatest", "least"];
 
@@ -396,9 +375,19 @@ fn check_r006(
     warnings: &mut Vec<SqlWarning>,
 ) {
     let loc = stmt_location(curr_stmt);
-    let (where_clause, tables) = where_and_tables(&curr_stmt.statement);
-    let Some(where_clause) = where_clause else { return };
+    for (where_clause, tables) in where_contexts(&curr_stmt.statement) {
+        r006_check_where(where_clause, tables, _indexes, loc, confidence, warnings);
+    }
+}
 
+fn r006_check_where(
+    where_clause: &Expr,
+    tables: &[crate::ast::TableRef],
+    _indexes: Option<&crate::linter::IndexInfo>,
+    loc: crate::token::SourceLocation,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
     walk_expr(where_clause, &mut |e| {
         if let Expr::FunctionCall { name, args, .. } = e {
             let fn_lower = name.last().map(|s| s.to_lowercase()).unwrap_or_default();
@@ -516,13 +505,28 @@ fn emit_index_aware_r006(
     ));
 }
 
-/// Extract the WHERE clause and FROM/tables list from a statement.
-fn where_and_tables(stmt: &Statement) -> (Option<&Expr>, &[crate::ast::TableRef]) {
+/// Every `(WHERE, tables)` context in a statement: the top-level DML clause, or —
+/// for PL/pgSQL bodies including CREATE FUNCTION/PROCEDURE/PACKAGE BODY — one entry
+/// per embedded SELECT that has a WHERE, each paired with its own FROM list so
+/// index-aware checks (R006/R007) and schema lookups (R005) still work (#296).
+fn where_contexts(stmt: &Statement) -> Vec<(&Expr, &[crate::ast::TableRef])> {
     match stmt {
-        Statement::Select(s) => (s.where_clause.as_ref(), &s.from),
-        Statement::Update(s) => (s.where_clause.as_ref(), &s.tables),
-        Statement::Delete(s) => (s.where_clause.as_ref(), &s.tables),
-        _ => (extract_where_clause(stmt), &[]),
+        Statement::Select(s) => s.where_clause.as_ref().map(|w| (w, s.from.as_slice())).into_iter().collect(),
+        Statement::Update(s) => s.where_clause.as_ref().map(|w| (w, s.tables.as_slice())).into_iter().collect(),
+        Statement::Delete(s) => s.where_clause.as_ref().map(|w| (w, s.tables.as_slice())).into_iter().collect(),
+        _ => {
+            let mut out = Vec::new();
+            for block in crate::linter::pl_blocks_from_stmt(stmt) {
+                let mut selects: Vec<(&SelectStatement, SourceLocation)> = Vec::new();
+                crate::linter::collect_selects_from_pl_block(block, &mut selects);
+                for (s, _) in selects {
+                    if let Some(w) = s.where_clause.as_ref() {
+                        out.push((w, s.from.as_slice()));
+                    }
+                }
+            }
+            out
+        }
     }
 }
 
@@ -574,8 +578,19 @@ fn check_r007(
     warnings: &mut Vec<SqlWarning>,
 ) {
     let loc = stmt_location(curr_stmt);
-    let (where_clause, tables) = where_and_tables(&curr_stmt.statement);
-    let Some(where_clause) = where_clause else { return };
+    for (where_clause, tables) in where_contexts(&curr_stmt.statement) {
+        r007_check_where(where_clause, tables, _indexes, loc, confidence, warnings);
+    }
+}
+
+fn r007_check_where(
+    where_clause: &Expr,
+    tables: &[crate::ast::TableRef],
+    _indexes: Option<&crate::linter::IndexInfo>,
+    loc: crate::token::SourceLocation,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
     walk_expr(where_clause, &mut |e| {
         if let Expr::Like { expr, pattern, negated: false, .. } = e {
             if let Expr::Literal(crate::ast::Literal::String(s)) = pattern.as_ref() {
@@ -1126,6 +1141,36 @@ fn check_order_by_select_targets(
                 Some(&suggestion),
                 loc,
                 Some("SELECT 规范"),
+                confidence,
+            ));
+        }
+    }
+}
+
+// ── R013: Oracle implicit join — FROM a, b (comma-separated table list) ──
+// Explicit JOINs fold into a single TableRef::Join; multiple top-level
+// TableRef entries mean comma-separated FROM.
+
+fn check_r013(
+    curr_stmt: &StatementInfo,
+    _stmts: &[StatementInfo],
+    _schema: Option<&crate::analyzer::schema::SchemaMap>,
+    _indexes: Option<&crate::linter::IndexInfo>,
+    _config: &LintConfig,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
+    if let Statement::Select(s) = &curr_stmt.statement {
+        if s.from.len() > 1 {
+            let loc = loc_from_spanned(s, stmt_location(curr_stmt));
+            warnings.push(make_warning(
+                WarningLevel::Prohibition,
+                "R013",
+                "implicit-join",
+                "\u{4f7f}\u{7528} Oracle \u{9690}\u{5f0f}\u{8fde}\u{63a5}\u{8bed}\u{6cd5}\u{ff08}\u{9017}\u{53f7}\u{5206}\u{9694} FROM\u{ff09}\u{ff0c}\u{5efa}\u{8bae}\u{6539}\u{4e3a} ANSI JOIN".into(),
+                Some("\u{6539}\u{7528} INNER JOIN / LEFT JOIN \u{63d0}\u{9ad8}\u{53ef}\u{8bfb}\u{6027}"),
+                loc,
+                None,
                 confidence,
             ));
         }

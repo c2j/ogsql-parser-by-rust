@@ -1,8 +1,8 @@
 use crate::ast::plpgsql::PlStatement;
 use crate::ast::{Expr, InsertSource, SelectStatement, SelectTarget, SetOperation, Statement, StatementInfo, TableRef};
 use crate::linter::{
-    collect_selects_from_stmt, loc_from_spanned, make_warning, stmt_location, walk_expr, walk_select_exprs, Confidence,
-    LintConfig, LintRuleEntry, SqlLinter, SqlWarning, StatementKind, WarningLevel,
+    collect_selects_from_stmt, extract_where, literals_equal, loc_from_spanned, make_warning, stmt_location, walk_expr,
+    walk_select_exprs, Confidence, LintConfig, LintRuleEntry, SqlLinter, SqlWarning, StatementKind, WarningLevel,
 };
 use crate::token::SourceLocation;
 
@@ -195,18 +195,29 @@ pub fn register(linter: &mut SqlLinter) {
             stmt_kind: StatementKind::All,
             check_fn: check_p023,
         },
+        LintRuleEntry {
+            id: "P024",
+            name: "rownum-pagination",
+            description: "ROWNUM is an Oracle-only pagination pseudo-column; use LIMIT/OFFSET or FETCH FIRST",
+            level: WarningLevel::Performance,
+            // All: dispatches on CreateFunction/CreateProcedure/CreatePackageBody (PlBlock
+            // after Task 2) AND plain DML, so ROWNUM inside PL bodies is also detected.
+            stmt_kind: StatementKind::All,
+            check_fn: check_p024,
+        },
+        LintRuleEntry {
+            id: "P025",
+            name: "in-subquery-to-exists",
+            description: "IN (subquery) may perform worse than EXISTS or JOIN; consider rewriting",
+            // Suggestion per issue #300 (positive IN is a soft perf hint, unlike
+            // NOT IN); P-prefix kept per issue's requested ID despite the level.
+            level: WarningLevel::Suggestion,
+            stmt_kind: StatementKind::Dml,
+            check_fn: check_p025,
+        },
     ];
     for rule in rules {
         linter.register(rule);
-    }
-}
-
-fn extract_where(stmt: &Statement) -> Option<&Expr> {
-    match stmt {
-        Statement::Select(s) => s.where_clause.as_ref(),
-        Statement::Update(s) => s.where_clause.as_ref(),
-        Statement::Delete(s) => s.where_clause.as_ref(),
-        _ => None,
     }
 }
 
@@ -897,13 +908,6 @@ fn check_p015(
     }
 }
 
-fn literals_equal(a: &Expr, b: &Expr) -> bool {
-    match (a, b) {
-        (Expr::Literal(l), Expr::Literal(r)) => l == r,
-        _ => false,
-    }
-}
-
 // P016: UPDATE FROM without join condition in WHERE
 fn check_p016(
     curr_stmt: &StatementInfo,
@@ -1121,18 +1125,12 @@ fn check_p021(
 }
 
 fn walk_pl_for_loop_insert(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_pl_stmts_for_loop_insert(&block.body, found, false);
+        if *found {
+            return;
         }
-        _ => return,
-    };
-    check_pl_stmts_for_loop_insert(&block.body, found, false);
+    }
 }
 
 fn check_pl_stmts_for_loop_insert(pl_stmts: &[crate::ast::plpgsql::PlStatement], found: &mut bool, inside_loop: bool) {
@@ -1220,5 +1218,99 @@ fn check_p023(
                 confidence,
             ));
         }
+    }
+}
+
+// ── P024: ROWNUM pseudo-column (Oracle pagination) → LIMIT/OFFSET or FETCH FIRST ──
+
+fn check_p024(
+    curr_stmt: &StatementInfo,
+    _stmts: &[StatementInfo],
+    _schema: Option<&crate::analyzer::schema::SchemaMap>,
+    _indexes: Option<&crate::linter::IndexInfo>,
+    _config: &LintConfig,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
+    let loc = stmt_location(curr_stmt);
+    let mut selects: Vec<(&SelectStatement, SourceLocation)> = Vec::new();
+    collect_selects_from_stmt(&curr_stmt.statement, loc, &mut selects);
+    for (s, _) in selects {
+        let mut found = false;
+        if let Some(ref w) = s.where_clause {
+            walk_expr(w, &mut |e| {
+                if is_rownum_ref(e) {
+                    found = true;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if !found {
+            for t in &s.targets {
+                if let SelectTarget::Expr(e, _) = t {
+                    walk_expr(e, &mut |e| {
+                        if is_rownum_ref(e) {
+                            found = true;
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    if found {
+                        break;
+                    }
+                }
+            }
+        }
+        if found {
+            warnings.push(make_warning(
+                WarningLevel::Performance,
+                "P024",
+                "rownum-pagination",
+                "ROWNUM \u{4e3a} Oracle \u{4e13}\u{6709}\u{5206}\u{9875}\u{8bed}\u{6cd5}\u{ff0c}\u{5efa}\u{8bae}\u{4f7f}\u{7528} LIMIT/OFFSET \u{6216} FETCH FIRST".into(),
+                Some("\u{5efa}\u{8bae}\u{4f7f}\u{7528} LIMIT/OFFSET \u{6216} FETCH FIRST"),
+                loc,
+                None,
+                confidence,
+            ));
+        }
+    }
+}
+
+fn is_rownum_ref(e: &Expr) -> bool {
+    matches!(e, Expr::ColumnRef(name) if name.len() == 1 && name[0].eq_ignore_ascii_case("rownum"))
+}
+
+// ── P025: positive IN (subquery) → EXISTS or JOIN ──
+
+fn check_p025(
+    curr_stmt: &StatementInfo,
+    _stmts: &[StatementInfo],
+    _schema: Option<&crate::analyzer::schema::SchemaMap>,
+    _indexes: Option<&crate::linter::IndexInfo>,
+    _config: &LintConfig,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
+    let loc = stmt_location(curr_stmt);
+    if let Some(where_clause) = extract_where(&curr_stmt.statement) {
+        walk_expr(where_clause, &mut |e| match e {
+            Expr::InSubquery { negated: false, .. } => {
+                warnings.push(make_warning(
+                    WarningLevel::Suggestion,
+                    "P025",
+                    "in-subquery-to-exists",
+                    "IN \u{5b50}\u{67e5}\u{8be2}\u{53ef}\u{80fd}\u{6027}\u{80fd}\u{4e0d}\u{4f73}\u{ff0c}\u{8003}\u{8651}\u{4f7f}\u{7528} EXISTS \u{6216} JOIN \u{66ff}\u{4ee3}".into(),
+                    Some("\u{6539}\u{7528} EXISTS (SELECT 1 ...) \u{6216} JOIN"),
+                    loc,
+                    None,
+                    confidence,
+                ));
+                false
+            }
+            _ => true,
+        });
     }
 }

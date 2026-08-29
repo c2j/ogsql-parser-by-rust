@@ -396,6 +396,10 @@ impl Parser {
 
     fn parse_function_options(&mut self) -> FunctionOptions {
         let raw = self.skip_to_semicolon_and_collect();
+        Self::parse_function_options_from_raw(&raw)
+    }
+
+    fn parse_function_options_from_raw(raw: &str) -> FunctionOptions {
         let mut opts = FunctionOptions {
             language: None,
             volatility: None,
@@ -615,12 +619,95 @@ impl Parser {
                     },
                 )
             }
+        } else if self.procedure_body_after_options() {
+            let raw = self.collect_until_body_marker();
+            let opts = Self::parse_function_options_from_raw(&raw);
+            // At AS/IS marker now.
+            self.advance();
+            let block = if matches!(self.peek(), Token::DollarString { .. }) {
+                if let Token::DollarString { body: inner, .. } = self.peek().clone() {
+                    self.advance();
+                    Self::parse_pl_block_from_str(&inner).ok()
+                } else {
+                    unreachable!()
+                }
+            } else {
+                let param_names: Vec<String> = parameters.iter().map(|p| p.name.clone()).collect();
+                Some(self.parse_procedure_body(&param_names)?)
+            };
+            (block, opts)
         } else {
             let options = self.parse_function_options();
             (None, options)
         };
 
         Ok(CreateProcedureStatement { replace: false, name, parameters, options, block })
+    }
+
+    /// Detect `... OPTIONS ... AS/IS body` where options appear between the
+    /// parameter list and the body marker (e.g. `LANGUAGE plpgsql AS $$...$$`).
+    /// Only claims bodies this parser can actually consume (dollar-quoted or an
+    /// inline DECLARE/BEGIN block); other forms such as `AS '<string>'` are left
+    /// to the options-only path so they keep parsing as before.
+    fn procedure_body_after_options(&self) -> bool {
+        let mut i = self.pos;
+        let mut depth = 0i32;
+        while i < self.tokens.len() {
+            match &self.tokens[i].token {
+                Token::Keyword(Keyword::IS) | Token::Keyword(Keyword::AS) if depth == 0 => {
+                    return matches!(
+                        self.tokens.get(i + 1).map(|t| &t.token),
+                        Some(Token::DollarString { .. })
+                            | Some(Token::Keyword(Keyword::BEGIN_P))
+                            | Some(Token::Keyword(Keyword::DECLARE))
+                    );
+                }
+                Token::Semicolon if depth == 0 => return false,
+                Token::Eof => return false,
+                Token::LParen => depth += 1,
+                Token::RParen => depth = (depth - 1).max(0),
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// Collect raw token text up to (but not consuming) the AS/IS body marker.
+    fn collect_until_body_marker(&mut self) -> String {
+        let mut collected = String::new();
+        let mut depth = 0i32;
+        loop {
+            match self.peek() {
+                Token::Eof => break,
+                Token::Keyword(Keyword::IS) | Token::Keyword(Keyword::AS) if depth == 0 => break,
+                Token::Semicolon if depth == 0 => break,
+                Token::LParen => {
+                    depth += 1;
+                    if !collected.is_empty() {
+                        collected.push(' ');
+                    }
+                    collected.push_str(&self.token_to_string());
+                    self.advance();
+                }
+                Token::RParen => {
+                    depth -= 1;
+                    if !collected.is_empty() {
+                        collected.push(' ');
+                    }
+                    collected.push_str(&self.token_to_string());
+                    self.advance();
+                }
+                _ => {
+                    if !collected.is_empty() {
+                        collected.push(' ');
+                    }
+                    collected.push_str(&self.token_to_string());
+                    self.advance();
+                }
+            }
+        }
+        collected.trim().to_string()
     }
 
     pub(crate) fn parse_create_package(&mut self, replace: bool) -> Result<Statement, ParserError> {

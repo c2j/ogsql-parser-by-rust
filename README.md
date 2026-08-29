@@ -177,7 +177,7 @@ ogsql-parser/
 │   │   ├── mod.rs          # Semantic analysis (dynamic SQL, fingerprints, MERGE, etc.)
 │   │   ├── schema.rs       # Schema loading and resolution
 │   │   └── return_cursor.rs # Return cursor analysis
-│   ├── linter/             # SQL anti-pattern linter (53 rules, 4 severity levels)
+│   ├── linter/             # SQL anti-pattern linter (61 rules, 4 severity levels)
 │   ├── ibatis/             # iBatis/MyBatis XML parsing
 │   ├── java/               # Java source SQL extraction
 │   └── mcp/                # MCP server implementation
@@ -267,7 +267,7 @@ Options:
       --comments          Include comments in output
       --mybatis           Enable MyBatis #{param} and ${expr} placeholder support
       --schema-json <FILE> Schema JSON file for semantic analysis
-      --lint              Run SQL anti-pattern linter (53 rules; configurable via .ogsql-lint.toml)
+      --lint              Run SQL anti-pattern linter (61 rules; configurable via .ogsql-lint.toml)
       --extract-sql       Extract dynamic SQL from PL/pgSQL (resolve EXECUTE IMMEDIATE, %TYPE)
   -h, --help              Print help
   -V, --version           Print version
@@ -365,7 +365,7 @@ echo "SELECT FROM" | ogsql validate
 # Validate with strict mode (detects undefined functions in PL blocks)
 echo "CREATE OR REPLACE FUNCTION test() RETURNS VOID AS \$\$ BEGIN PERFORM unknown_func(); END; \$\$ LANGUAGE plpgsql" | ogsql validate --strict
 
-# Validate with the SQL anti-pattern linter (53 rules; Prohibition/Performance/Caution/Suggestion)
+# Validate with the SQL anti-pattern linter (61 rules; Prohibition/Performance/Caution/Suggestion)
 echo "SELECT * FROM users WHERE LEFT(name, 3) = 'abc'" | ogsql validate --lint
 
 # Lint a directory with index-aware rules (auto-extracts DDL schema for R006/R007)
@@ -850,6 +850,6 @@ This is an active development project. Phases 1–6 are complete, and Phase 7 (O
 
 ---
 
-**Status / 状态**: Phase 1–6 Complete | 1980+ unit tests | 1409/1409 regression tests passing | 53 lint rules  
-**Version / 版本**: 0.10.1
+**Status / 状态**: Phase 1–6 Complete | 1980+ unit tests | 1409/1409 regression tests passing | 61 lint rules  
+**Version / 版本**: 0.11.0
 **Last Updated / 最后更新**: 2026-06-27

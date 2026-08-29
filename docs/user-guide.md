@@ -61,7 +61,7 @@ OGSQL Parser 是一个使用 Rust 编写的 SQL 解析器，专为 openGauss / G
 - **Java 源文件 SQL 提取**：从 Java 代码中提取并解析嵌入的 SQL 语句
 - **多字符集支持**：自动检测和转换 UTF-8、EUC-JP、EUC-KR、GB18030、BIG5、UTF-16
 - **MCP 服务器**：作为 AI 工具服务器，与 Claude Desktop、Cursor 等 AI 编辑器集成
-- **SQL 反模式检测 (Lint)**：内置 53 条规则，覆盖禁止项、性能、注意事项和建议四个等级
+- **SQL 反模式检测 (Lint)**：内置 61 条规则，覆盖禁止项、性能、注意事项和建议四个等级
 
 该项目提供了多种使用方式：命令行工具、HTTP API 服务、交互式终端以及 MCP 服务器。
 
@@ -788,7 +788,7 @@ MIT OR Apache-2.0 双许可，您可以选择其中任一使用。
 
 ## 11. SQL 反模式检测 (Lint)
 
-OGSQL Parser 内置 SQL 静态检测引擎 (`SqlLinter`)，可识别 53 条反模式规则，覆盖**禁止项 (Prohibition)**、**性能 (Performance)**、**注意事项 (Caution)** 和**建议 (Suggestion)** 四个等级。
+OGSQL Parser 内置 SQL 静态检测引擎 (`SqlLinter`)，可识别 61 条反模式规则，覆盖**禁止项 (Prohibition)**、**性能 (Performance)**、**注意事项 (Caution)** 和**建议 (Suggestion)** 四个等级。
 
 ### 11.1 快速开始
 
@@ -859,10 +859,10 @@ foreach_estimated_rows = 1000   # iBatis <foreach> 预估迭代次数（用于 C
 ### 11.4 规则清单
 
 > **等级说明**：`Prohibition`(禁止项) > `Performance`(性能) > `Caution`(注意) > `Suggestion`(建议)。
-> 共 54 条规则（8 Prohibition + 23 Performance + 17 Caution + 6 Suggestion = 54）。
+> 共 61 条规则（11 Prohibition + 25 Performance + 17 Caution + 8 Suggestion = 61）。
 > 编号不连续（如 C002–C004、S003–S004 不存在）是规划中预留的规则位。
 
-#### 禁止项 (Prohibition) — 违反 GaussDB 编码规范，可能引发数据安全风险（8 条）
+#### 禁止项 (Prohibition) — 违反 GaussDB 编码规范，可能引发数据安全风险（11 条）
 
 | ID | 名称 | 适用语句 | 说明 |
 |----|------|----------|------|
@@ -874,8 +874,9 @@ foreach_estimated_rows = 1000   # iBatis <foreach> 预估迭代次数（用于 C
 | R006 | `function-on-where-column` | DML | WHERE 中对列使用函数或表达式运算，将导致索引失效。建议将运算移到等号另一侧或使用函数索引 |
 | R007 | `like-leading-wildcard` | DML | `LIKE '%...'` 前导通配符导致无法使用索引，触发全表扫描。建议避免以通配符开头的 LIKE 模式 |
 | R010 | `function-side-effect` | All | 自定义 Function 中包含非 SELECT DML（INSERT/UPDATE/DELETE/MERGE/TRUNCATE 等）、事务控制语句（COMMIT/ROLLBACK/SAVEPOINT/SET TRANSACTION），或调用了含事务语句的其他函数/过程。函数应避免修改数据和提交/回滚事务，考虑将副作用操作移至过程中 |
+| R013 | `implicit-join` | SELECT | 使用 Oracle 隐式连接语法（逗号分隔 FROM，如 `FROM a, b`），可读性较差。建议改为显式 ANSI JOIN（INNER JOIN / LEFT JOIN） |
 
-#### 性能 (Performance) — 可识别的性能陷阱，有明确的优化路径（23 条）
+#### 性能 (Performance) — 可识别的性能陷阱，有明确的优化路径（25 条）
 
 | ID | 名称 | 适用语句 | 说明 |
 |----|------|----------|------|
@@ -903,6 +904,8 @@ foreach_estimated_rows = 1000   # iBatis <foreach> 预估迭代次数（用于 C
 | P021 | `row-by-row-insert-in-loop` | PL Block | 循环体内包含 INSERT，应使用 FORALL 批量操作或 `INSERT ... SELECT` 替代逐行插入 |
 | P022 | `explain-in-production` | All | EXPLAIN 语句不应出现在生产代码中。建议仅用于调试环境 |
 | P023 | `connect-by-performance` | All | CONNECT BY 层级查询在数据量大或递归层次深时性能可能显著下降；缺少 START WITH 可能导致全表扫描。建议考虑使用 WITH RECURSIVE CTE 替代 |
+| P024 | `rownum-pagination` | All | `ROWNUM` 为 Oracle 专有分页伪列，迁移至 openGauss 时应改用 `LIMIT/OFFSET` 或 `FETCH FIRST`（在存储过程体内同样检测） |
+| P025 | `in-subquery-to-exists` | DML | 正向 `IN (子查询)` 性能可能不佳，可考虑改用 `EXISTS` 或 `JOIN` 替代（Suggestion 级别，区别于 P002 的 NOT IN） |
 
 #### 注意事项 (Caution) — 语法合法但容易忽略，需要上下文判断（17 条）
 
@@ -924,8 +927,9 @@ foreach_estimated_rows = 1000   # iBatis <foreach> 预估迭代次数（用于 C
 | C016 | `autonomous-transaction` | PL Block | `PRAGMA AUTONOMOUS_TRANSACTION` 会创建独立事务，性能开销较大。建议评估是否真的需要独立事务 |
 | C017 | `raise-in-exception-clears-variables` | PL Block | RAISE 在 EXCEPTION 块中会清空所有局部变量值（包括 OUT 参数），导致调用方无法获取错误信息。建议使用 RAISE INFO 传递具体错误信息，或在 RAISE 前将输出值保存到临时表/全局变量 |
 | C018 | `excessive-insert-values` | INSERT | `INSERT VALUES` 的 `行数 × 列数` 超过阈值（默认 65535）。建议拆分为更小批次插入以减少锁持有时间，或使用 COPY。iBatis/MyBatis 变体还会检测 `<foreach>` 动态批量插入中的参数膨胀风险 |
+| C019 | `commit-inside-loop` | PL Block | PL/pgSQL 循环体内包含 COMMIT/ROLLBACK，导致事务不原子且频繁提交影响性能（在存储过程体内同样检测）。建议将事务控制移出循环或使用批量操作 |
 
-#### 建议 (Suggestion) — 改善可维护性和健壮性，不影响正确性（6 条）
+#### 建议 (Suggestion) — 改善可维护性和健壮性，不影响正确性（8 条）
 
 | ID | 名称 | 适用语句 | 说明 |
 |----|------|----------|------|
@@ -935,6 +939,7 @@ foreach_estimated_rows = 1000   # iBatis <foreach> 预估迭代次数（用于 C
 | S006 | `limit-without-order-by` | SELECT | `LIMIT` 无 `ORDER BY`，结果顺序不确定。建议添加 ORDER BY 保证结果确定性 |
 | S007 | `explicit-type-for-literals` | DML | WHERE 中字符串常量与列比较时类型可能不匹配，可能导致隐式转换。建议使用显式类型转换：`'val'::type` 或 `CAST('val' AS type)`（需要 schema 信息辅助判断） |
 | S008 | `complex-sql-consider-split` | All | SQL 文本长度超过阈值（默认 4096 字符，对齐 GaussDB `track_activity_query_size`），建议拆分为多个简单查询或使用 CTE |
+| S009 | `tautological-condition` | DML | WHERE 子句中存在恒真条件（如 `1=1`、`'a' = 'a'`），为冗余条件。建议移除 |
 
 > 如需在 Rust 代码中以库 API 方式使用 Lint 功能，请参阅 [Crate 开发者指南 - SQL Lint](./crate-guide.md#5-sql-lint-库-api)。
 

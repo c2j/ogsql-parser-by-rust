@@ -404,6 +404,11 @@ fn classify_statement(stmt: &Statement) -> StatementKind {
         Statement::Merge(_) => StatementKind::Merge,
         Statement::Values(_) => StatementKind::Select,
         Statement::AnonyBlock(_) | Statement::Do(_) => StatementKind::PlBlock,
+        // CREATE FUNCTION/PROCEDURE/PACKAGE BODY carry PL/pgSQL bodies; classify
+        // as PlBlock so PL rules traverse the embedded blocks (issue #296).
+        Statement::CreateFunction(_) | Statement::CreateProcedure(_) | Statement::CreatePackageBody(_) => {
+            StatementKind::PlBlock
+        }
         Statement::Lock(_) => StatementKind::All, // LockStatement is its own category
         Statement::Drop(_) => StatementKind::Ddl,
         Statement::Explain(_) => StatementKind::All,
@@ -418,8 +423,6 @@ fn classify_statement(stmt: &Statement) -> StatementKind {
         | Statement::CreateDatabase(_)
         | Statement::CreateDatabaseLink(_)
         | Statement::CreateTablespace(_)
-        | Statement::CreateFunction(_)
-        | Statement::CreateProcedure(_)
         | Statement::CreateType(_)
         | Statement::AlterIndex(_)
         | Statement::CreatePackage(_)
@@ -533,7 +536,6 @@ fn classify_statement(stmt: &Statement) -> StatementKind {
         | Statement::DropAppWorkloadGroupMapping(_)
         | Statement::Rule(_)
         | Statement::DropRule(_)
-        | Statement::CreatePackageBody(_)
         | Statement::RemovePackage(_)
         | Statement::Shutdown(_)
         | Statement::Barrier(_)
@@ -761,6 +763,24 @@ pub fn stmt_location(info: &StatementInfo) -> SourceLocation {
     SourceLocation { line: info.start_line, column: info.start_col, offset: 0 }
 }
 
+/// Get the top-level WHERE clause of a DML statement (Select/Update/Delete).
+pub(crate) fn extract_where(stmt: &Statement) -> Option<&crate::ast::Expr> {
+    match stmt {
+        Statement::Select(s) => s.where_clause.as_ref(),
+        Statement::Update(s) => s.where_clause.as_ref(),
+        Statement::Delete(s) => s.where_clause.as_ref(),
+        _ => None,
+    }
+}
+
+/// Compare two expressions as literal values (P015/S009 tautology checks).
+pub(crate) fn literals_equal(a: &crate::ast::Expr, b: &crate::ast::Expr) -> bool {
+    match (a, b) {
+        (crate::ast::Expr::Literal(l), crate::ast::Expr::Literal(r)) => l == r,
+        _ => false,
+    }
+}
+
 /// Collect ALL `SelectStatement` nodes reachable from the given statements,
 /// including those nested inside:
 ///
@@ -831,6 +851,12 @@ pub(crate) fn collect_selects_from_stmt<'a>(
         Statement::CreateMaterializedView(cmv) => {
             out.push((&cmv.query, loc));
             collect_nested_in_select(&cmv.query, out);
+        }
+        // #296: descend into stored-program bodies for the 3 CREATE variants.
+        Statement::CreateFunction(_) | Statement::CreateProcedure(_) | Statement::CreatePackageBody(_) => {
+            for block in pl_blocks_from_stmt(stmt) {
+                collect_selects_from_pl_block(block, out);
+            }
         }
         _ => {}
     }
@@ -1089,8 +1115,29 @@ fn collect_selects_from_from<'a>(
     }
 }
 
+/// Return all PL/pgSQL blocks reachable from a statement's PL body (incl. CREATE FUNCTION/PROCEDURE/PACKAGE BODY).
+pub(crate) fn pl_blocks_from_stmt(stmt: &Statement) -> Vec<&crate::ast::plpgsql::PlBlock> {
+    use crate::ast::PackageItem;
+    match stmt {
+        Statement::AnonyBlock(b) => vec![&b.block],
+        Statement::Do(d) => d.block.iter().collect(),
+        Statement::CreateFunction(f) => f.block.iter().collect(),
+        Statement::CreateProcedure(p) => p.block.iter().collect(),
+        Statement::CreatePackageBody(pkg) => pkg
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                PackageItem::Function(f) => f.block.as_ref(),
+                PackageItem::Procedure(p) => p.block.as_ref(),
+                _ => None,
+            })
+            .collect(),
+        _ => vec![],
+    }
+}
+
 /// Walk a PL/pgSQL block and collect embedded SELECTs.
-fn collect_selects_from_pl_block<'a>(
+pub(crate) fn collect_selects_from_pl_block<'a>(
     block: &'a crate::ast::plpgsql::PlBlock,
     out: &mut Vec<(&'a SelectStatement, SourceLocation)>,
 ) {
@@ -1126,6 +1173,11 @@ fn collect_selects_from_pl_stmts<'a>(
             }
             PlStatement::Open(o) => {
                 if let PlOpenKind::ForQuery { parsed_query: Some(ref q), .. } = o.kind {
+                    collect_selects_from_stmt(q, SourceLocation::default(), out);
+                }
+            }
+            PlStatement::ReturnQuery(rq) => {
+                if let Some(ref q) = rq.parsed_query {
                     collect_selects_from_stmt(q, SourceLocation::default(), out);
                 }
             }

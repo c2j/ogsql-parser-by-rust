@@ -2,8 +2,8 @@ use crate::ast::plpgsql::{PlDataType, PlDeclaration, PlStatement};
 use crate::ast::{Expr, Statement, StatementInfo};
 use crate::linter::type_helpers::{build_column_type_map, is_string_type, resolve_column_type};
 use crate::linter::{
-    loc_from_spanned, make_warning, stmt_location, walk_expr, Confidence, LintConfig, LintRuleEntry, SqlLinter,
-    SqlWarning, StatementKind, WarningLevel,
+    extract_where, literals_equal, loc_from_spanned, make_warning, stmt_location, walk_expr, Confidence, LintConfig,
+    LintRuleEntry, SqlLinter, SqlWarning, StatementKind, WarningLevel,
 };
 
 pub fn register(linter: &mut SqlLinter) {
@@ -56,6 +56,14 @@ pub fn register(linter: &mut SqlLinter) {
             level: WarningLevel::Suggestion,
             stmt_kind: StatementKind::All,
             check_fn: check_s008,
+        },
+        LintRuleEntry {
+            id: "S009",
+            name: "tautological-condition",
+            description: "Tautological conditions like 1=1 in WHERE are redundant; remove them",
+            level: WarningLevel::Suggestion,
+            stmt_kind: StatementKind::Dml,
+            check_fn: check_s009,
         },
     ];
     for rule in rules {
@@ -149,20 +157,14 @@ fn check_s005(
 }
 
 fn walk_pl_for_type_name(stmt: &Statement, found: &mut bool) {
-    let block = match stmt {
-        Statement::AnonyBlock(b) => &b.block,
-        Statement::Do(d) => {
-            if let Some(ref block) = d.block {
-                block
-            } else {
-                return;
-            }
+    for block in crate::linter::pl_blocks_from_stmt(stmt) {
+        check_decls_for_type_name(&block.declarations, found);
+        if !*found {
+            check_pl_stmts_for_type_name(&block.body, found);
         }
-        _ => return,
-    };
-    check_decls_for_type_name(&block.declarations, found);
-    if !*found {
-        check_pl_stmts_for_type_name(&block.body, found);
+        if *found {
+            return;
+        }
     }
 }
 
@@ -355,4 +357,44 @@ fn check_s008(
             confidence,
         ));
     }
+}
+
+// ── S009: tautological condition (1=1, 'a'='a') in WHERE ──
+
+fn check_s009(
+    curr_stmt: &StatementInfo,
+    _stmts: &[StatementInfo],
+    _schema: Option<&crate::analyzer::schema::SchemaMap>,
+    _indexes: Option<&crate::linter::IndexInfo>,
+    _config: &LintConfig,
+    confidence: Confidence,
+    warnings: &mut Vec<SqlWarning>,
+) {
+    let loc = stmt_location(curr_stmt);
+    if let Some(where_clause) = extract_where(&curr_stmt.statement) {
+        walk_expr(where_clause, &mut |e| {
+            if let Expr::BinaryOp { op, left, right } = e {
+                if is_tautological_op(op) && literals_equal(left, right) {
+                    warnings.push(make_warning(
+                        WarningLevel::Suggestion,
+                        "S009",
+                        "tautological-condition",
+                        format!("WHERE \u{5b50}\u{53e5}\u{4e2d}\u{5b58}\u{5728}\u{6052}\u{771f}\u{6761}\u{4ef6}\u{ff08}{op}\u{ff09}\u{ff0c}\u{5efa}\u{8bae}\u{79fb}\u{9664}"),
+                        Some("\u{79fb}\u{9664}\u{8be5}\u{6761}\u{4ef6}\u{ff0c}\u{76f4}\u{63a5}\u{7f16}\u{5199}\u{5176}\u{4ed6}\u{6761}\u{4ef6}"),
+                        loc,
+                        None,
+                        confidence,
+                    ));
+                }
+            }
+            true
+        });
+    }
+}
+
+/// Operators that are always true when both operands are the same literal.
+/// `<>`/`!=`/`>`/`<` are deliberately excluded: with equal operands they are
+/// always *false* (contradictions), not tautologies.
+fn is_tautological_op(op: &str) -> bool {
+    matches!(op, "=" | ">=" | "<=")
 }

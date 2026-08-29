@@ -67,6 +67,113 @@ fn r001_where_subquery_star_flagged() {
 }
 
 #[test]
+fn r001_select_star_inside_function_warns() {
+    // Regression for #296: SELECT * inside CREATE FUNCTION body must warn.
+    let stmts = parse(
+        "CREATE OR REPLACE FUNCTION bad_func RETURN VARCHAR2 IS
+            v_name VARCHAR2;
+         BEGIN
+            SELECT * INTO v_name FROM users WHERE id = 1;
+            RETURN v_name;
+         END;",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R001"), "SELECT * inside function body should trigger R001");
+}
+
+#[test]
+fn r005_r006_r007_inside_function_warn() {
+    let stmts = parse(
+        "CREATE FUNCTION bad_func RETURN VARCHAR2 IS v_name VARCHAR2;
+         BEGIN
+            SELECT v_name INTO v_name FROM users WHERE LEFT(name, 3) = 'abc' AND name LIKE '%abc' AND status = 1;
+            RETURN v_name;
+         END;",
+    );
+    let w = lint(&stmts);
+    // R007: LIKE with leading wildcard '%abc'
+    // R006: LEFT(name,3) function on column
+    assert!(has_rule(&w, "R006"), "function on WHERE column inside function body should trigger R006");
+    assert!(has_rule(&w, "R007"), "LIKE leading wildcard inside function body should trigger R007");
+}
+
+#[test]
+fn r007_second_embedded_select_warns() {
+    // Every embedded SELECT must be checked, not just the first one with a WHERE.
+    let stmts = parse(
+        "CREATE FUNCTION f RETURN INTEGER IS v INTEGER;
+         BEGIN
+            SELECT v INTO v FROM t1 WHERE id = 1;
+            SELECT v INTO v FROM t2 WHERE name LIKE '%abc';
+            RETURN v;
+         END;",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R007"), "LIKE in the second embedded SELECT should still trigger R007");
+}
+
+#[test]
+fn r006_index_aware_inside_function_warns() {
+    // Embedded SELECTs carry their own FROM list, so the index-aware R006 path
+    // can resolve the table and fire (it is skipped when tables are unknown).
+    let stmts = parse(
+        "CREATE FUNCTION f RETURN INTEGER IS v INTEGER;
+         BEGIN
+            SELECT v INTO v FROM users WHERE upper(name) = 'X';
+            RETURN v;
+         END;",
+    );
+    let mut idx_cols = std::collections::HashMap::new();
+    idx_cols.insert("idx_users_name".to_string(), vec!["name".to_string()]);
+    let mut indexes: crate::analyzer::schema::IndexMapV2 = std::collections::HashMap::new();
+    indexes.insert("users".to_string(), idx_cols);
+
+    let mut linter = SqlLinter::with_default_rules(LintConfig::default());
+    linter.set_index_info(indexes);
+    let w = linter.lint(&stmts, None, Confidence::Full);
+    assert!(
+        has_rule(&w, "R006"),
+        "index-aware R006 should fire for a function on an indexed column inside a function body"
+    );
+}
+
+#[test]
+fn r007_like_and_compound_warns() {
+    // LIKE followed by AND must still trigger R007 (precedence regression guard).
+    let stmts = parse("SELECT v FROM users WHERE name LIKE '%abc' AND status = 1");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R007"), "LIKE '%...' AND ... should trigger R007");
+}
+
+#[test]
+fn issue296_full_function_body_lints() {
+    // Exact scenario from issue #296 Test B.
+    let stmts = parse(
+        "CREATE OR REPLACE FUNCTION bad_func RETURN VARCHAR2 IS
+            v_name VARCHAR2;
+         BEGIN
+            SELECT * INTO v_name FROM users WHERE id = 1;
+            EXECUTE IMMEDIATE 'DELETE FROM log WHERE id=' || v_name;
+            RETURN v_name;
+         EXCEPTION
+            WHEN OTHERS THEN RETURN NULL;
+         END;",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R001"), "SELECT * inside function should trigger R001");
+    assert!(has_rule(&w, "C012"), "EXECUTE IMMEDIATE concat should trigger C012");
+    assert!(has_rule(&w, "C013"), "WHEN OTHERS swallow should trigger C013");
+}
+
+#[test]
+fn issue296_plain_dml_still_lints() {
+    let stmts = parse("SELECT * FROM users WHERE DECODE(status, A, 1, 0) = 1");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R001"), "plain SELECT * still triggers R001");
+    assert!(has_rule(&w, "P009"), "DECODE still triggers P009");
+}
+
+#[test]
 fn r001_union_both_select_star_warns() {
     let stmts = parse("SELECT * FROM t1 UNION ALL SELECT * FROM t2");
     let w = lint(&stmts);
@@ -508,6 +615,64 @@ fn p023_select_order_by_not_triggered() {
     assert!(!has_rule(&w, "P023"));
 }
 
+// ── P024: ROWNUM pagination ──
+
+#[test]
+fn p024_rownum_in_where_warns() {
+    let stmts = parse("SELECT id FROM users WHERE ROWNUM <= 10");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "P024"), "ROWNUM in WHERE should trigger P024");
+}
+
+#[test]
+fn p024_rownum_in_select_list_warns() {
+    let stmts = parse("SELECT ROWNUM, id FROM users");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "P024"), "ROWNUM in SELECT list should trigger P024");
+}
+
+#[test]
+fn p024_limit_offset_no_warn() {
+    let stmts = parse("SELECT id FROM users LIMIT 10 OFFSET 20");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "P024"), "LIMIT/OFFSET pagination should not trigger P024");
+}
+
+#[test]
+fn p024_rownum_inside_function_warns() {
+    // Works because collect_selects_from_stmt now descends into CREATE bodies (#296).
+    let stmts = parse(
+        "CREATE FUNCTION f() RETURNS SETOF int LANGUAGE plpgsql AS $$ BEGIN RETURN QUERY SELECT id FROM users WHERE ROWNUM <= 10; END; $$",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "P024"), "ROWNUM inside function body should trigger P024");
+}
+
+// ── P025: positive IN subquery → EXISTS/JOIN ──
+
+#[test]
+fn p025_in_subquery_warns() {
+    let stmts = parse("SELECT * FROM a WHERE id IN (SELECT id FROM b)");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "P025"), "positive IN subquery should trigger P025");
+    assert!(!has_rule(&w, "P002"), "positive IN should NOT trigger P002");
+}
+
+#[test]
+fn p025_not_in_still_p002() {
+    let stmts = parse("SELECT * FROM a WHERE id NOT IN (SELECT id FROM b)");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "P025"), "NOT IN should not trigger P025");
+    assert!(has_rule(&w, "P002"), "NOT IN still triggers P002");
+}
+
+#[test]
+fn p025_in_list_no_warn() {
+    let stmts = parse("SELECT * FROM a WHERE id IN (1, 2, 3)");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "P025"), "IN with literal list should not trigger P025");
+}
+
 // P023 nested scenarios — detected via collect_nested_selects
 
 #[test]
@@ -781,6 +946,72 @@ fn c014_pl_rollback() {
     let stmts = parse("DO $$ BEGIN ROLLBACK; END $$");
     let w = lint(&stmts);
     assert!(has_rule(&w, "C014"), "expected C014 for ROLLBACK in PL block");
+}
+
+// ── C019: COMMIT/ROLLBACK inside loop ──
+
+#[test]
+fn c019_commit_in_loop_warns() {
+    let stmts = parse("DO $$ BEGIN FOR i IN 1..10 LOOP INSERT INTO t VALUES (i); COMMIT; END LOOP; END $$");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C019"), "COMMIT inside LOOP should trigger C019");
+}
+
+#[test]
+fn c019_commit_outside_loop_no_warn() {
+    let stmts = parse("DO $$ BEGIN INSERT INTO t VALUES (1); COMMIT; END $$");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "C019"), "COMMIT outside loop should NOT trigger C019 (C014 covers it)");
+    assert!(has_rule(&w, "C014"), "COMMIT at block level still triggers C014");
+}
+
+#[test]
+fn c019_rollback_in_while_loop_warns() {
+    let stmts = parse("DO $$ BEGIN WHILE x < 10 LOOP ROLLBACK; x := x + 1; END LOOP; END $$");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C019"), "ROLLBACK inside WHILE loop should trigger C019");
+}
+
+#[test]
+fn c019_commit_in_function_loop_warns() {
+    // Enabled by #296 traversal.
+    let stmts = parse(
+        "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN FOR i IN 1..10 LOOP COMMIT; END LOOP; END; $$",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C019"), "COMMIT in function loop should trigger C019");
+}
+
+// ── #296: PL rules traverse CREATE FUNCTION/PROCEDURE/PACKAGE BODY ──
+
+#[test]
+fn c014_commit_in_function_warns() {
+    let stmts = parse("CREATE FUNCTION fn() RETURNS void LANGUAGE plpgsql AS $$ BEGIN COMMIT; END; $$");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C014"), "COMMIT inside CREATE FUNCTION body should trigger C014");
+}
+
+#[test]
+fn c012_concat_in_procedure_warns() {
+    let stmts =
+        parse("CREATE PROCEDURE p() LANGUAGE plpgsql AS $$ BEGIN EXECUTE IMMEDIATE 'SELECT * FROM ' || v_t; END; $$");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C012"), "EXECUTE IMMEDIATE concat inside procedure should trigger C012");
+}
+
+#[test]
+fn c013_swallow_in_package_body_warns() {
+    let stmts = parse(
+        "CREATE OR REPLACE PACKAGE BODY pkg AS
+            FUNCTION f RETURN VARCHAR2 IS v VARCHAR2;
+            BEGIN
+                NULL;
+            EXCEPTION WHEN OTHERS THEN RETURN NULL;
+            END;
+        END pkg;",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "C013"), "WHEN OTHERS swallow inside package body function should trigger C013");
 }
 
 // ── C015: SELECT FOR UPDATE blocking ──
@@ -1083,6 +1314,56 @@ fn s008_complex_sql() {
     let linter = SqlLinter::with_default_rules(config);
     let w = linter.lint(&stmts, None, Confidence::Full);
     assert!(has_rule(&w, "S008"), "expected S008 for long SQL");
+}
+
+// ── S009: tautological condition (1=1, 'a'='a') in WHERE ──
+
+#[test]
+fn s009_one_equals_one_warns() {
+    let stmts = parse("SELECT * FROM users WHERE 1=1 AND status = 'A'");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "S009"), "1=1 in WHERE should trigger S009");
+}
+
+#[test]
+fn s009_string_literals_equal_warns() {
+    let stmts = parse("SELECT * FROM users WHERE 'a' = 'a'");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "S009"), "equal string literals should trigger S009");
+}
+
+#[test]
+fn s009_one_equals_two_no_warn() {
+    let stmts = parse("SELECT * FROM users WHERE 1 = 2");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "S009"), "1=2 is not tautological");
+}
+
+#[test]
+fn s009_column_equals_literal_no_warn() {
+    let stmts = parse("SELECT * FROM users WHERE status = 'A'");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "S009"), "column=literal should not trigger S009");
+}
+
+#[test]
+fn s009_always_false_comparison_no_warn() {
+    // `1 <> 1` / `1 > 1` are contradictions (always false), not tautologies —
+    // S009 reports 恒真 conditions only.
+    for sql in ["SELECT * FROM t WHERE 1 <> 1", "SELECT * FROM t WHERE 1 > 1", "SELECT * FROM t WHERE 1 != 1"] {
+        let stmts = parse(sql);
+        let w = lint(&stmts);
+        assert!(!has_rule(&w, "S009"), "{sql} is always false, not tautological");
+    }
+}
+
+#[test]
+fn s009_ge_le_same_literal_warns() {
+    for sql in ["SELECT * FROM t WHERE 1 >= 1", "SELECT * FROM t WHERE 1 <= 1"] {
+        let stmts = parse(sql);
+        let w = lint(&stmts);
+        assert!(has_rule(&w, "S009"), "{sql} is always true and should trigger S009");
+    }
 }
 
 // ── R005: Schema-aware implicit type conversion ──
@@ -1647,4 +1928,35 @@ fn r012_group_by_star_skipped() {
     let stmts = parse("SELECT * FROM t GROUP BY a ORDER BY b");
     let w = lint(&stmts);
     assert!(!has_rule(&w, "R012"), "SELECT * with GROUP BY should be skipped (no false positive)");
+}
+
+// ── R013: Oracle implicit join (comma-separated FROM) ──
+
+#[test]
+fn r013_implicit_join_warns() {
+    let stmts = parse("SELECT a.id, b.name FROM a, b WHERE a.id = b.id");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R013"), "comma-separated FROM should trigger R013");
+}
+
+#[test]
+fn r013_explicit_join_no_warn() {
+    let stmts = parse("SELECT a.id, b.name FROM a INNER JOIN b ON a.id = b.id");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "R013"), "explicit ANSI JOIN should not trigger R013");
+}
+
+#[test]
+fn r013_single_table_no_warn() {
+    let stmts = parse("SELECT id FROM a");
+    let w = lint(&stmts);
+    assert!(!has_rule(&w, "R013"), "single-table FROM should not trigger R013");
+}
+
+#[test]
+fn r013_cross_join_style_warns() {
+    // Comma without WHERE = implicit cross join; R013 fires for the comma style.
+    let stmts = parse("SELECT * FROM a, b");
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R013"), "comma-separated FROM without WHERE still triggers R013");
 }
