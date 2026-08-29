@@ -646,13 +646,21 @@ impl Parser {
 
     /// Detect `... OPTIONS ... AS/IS body` where options appear between the
     /// parameter list and the body marker (e.g. `LANGUAGE plpgsql AS $$...$$`).
+    /// Only claims bodies this parser can actually consume (dollar-quoted or an
+    /// inline DECLARE/BEGIN block); other forms such as `AS '<string>'` are left
+    /// to the options-only path so they keep parsing as before.
     fn procedure_body_after_options(&self) -> bool {
         let mut i = self.pos;
         let mut depth = 0i32;
         while i < self.tokens.len() {
             match &self.tokens[i].token {
                 Token::Keyword(Keyword::IS) | Token::Keyword(Keyword::AS) if depth == 0 => {
-                    return true;
+                    return matches!(
+                        self.tokens.get(i + 1).map(|t| &t.token),
+                        Some(Token::DollarString { .. })
+                            | Some(Token::Keyword(Keyword::BEGIN_P))
+                            | Some(Token::Keyword(Keyword::DECLARE))
+                    );
                 }
                 Token::Semicolon if depth == 0 => return false,
                 Token::Eof => return false,

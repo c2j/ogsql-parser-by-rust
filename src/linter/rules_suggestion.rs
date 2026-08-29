@@ -374,7 +374,7 @@ fn check_s009(
     if let Some(where_clause) = extract_where(&curr_stmt.statement) {
         walk_expr(where_clause, &mut |e| {
             if let Expr::BinaryOp { op, left, right } = e {
-                if is_comparison_op(op) && literals_equal(left, right) {
+                if is_tautological_op(op) && literals_equal(left, right) {
                     warnings.push(make_warning(
                         WarningLevel::Suggestion,
                         "S009",
@@ -392,6 +392,9 @@ fn check_s009(
     }
 }
 
-fn is_comparison_op(op: &str) -> bool {
-    matches!(op, "=" | "<>" | "!=" | ">" | "<" | ">=" | "<=")
+/// Operators that are always true when both operands are the same literal.
+/// `<>`/`!=`/`>`/`<` are deliberately excluded: with equal operands they are
+/// always *false* (contradictions), not tautologies.
+fn is_tautological_op(op: &str) -> bool {
+    matches!(op, "=" | ">=" | "<=")
 }

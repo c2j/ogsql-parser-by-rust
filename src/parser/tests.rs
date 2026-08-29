@@ -606,6 +606,17 @@ fn test_plpgsql_return_query_execute() {
 }
 
 #[test]
+fn test_plpgsql_return_query_parsed_query_survives_json_roundtrip() {
+    // `parsed_query` is serialized like the sibling parsed_query fields, so a
+    // round-tripped AST stays equal to the freshly parsed one.
+    let (stmts, errors) = parse_with_errors("DO $$ BEGIN RETURN QUERY SELECT * FROM t; END $$");
+    assert!(errors.is_empty(), "unexpected parse errors: {errors:?}");
+    let json = serde_json::to_string(&stmts).expect("serialize");
+    let back: Vec<Statement> = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(stmts, back, "AST must survive JSON round-trip unchanged");
+}
+
+#[test]
 fn test_plpgsql_return_query_execute_using() {
     let block = parse_do_block("DO $$ BEGIN RETURN QUERY EXECUTE 'SELECT $1' USING 10; END $$");
     match &block.body[0] {
@@ -2586,6 +2597,20 @@ fn test_create_procedure_language_before_body() {
             assert_eq!(block.body.len(), 2, "expected COMMIT to be parsed as body statement");
         }
         _ => panic!("expected CreateProcedure, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn test_create_procedure_options_before_string_body_still_parses() {
+    // `AS '<string>'` bodies are not parsed into a block, but must not error —
+    // the options-before-body path must not claim them.
+    for sql in [
+        "CREATE PROCEDURE p() LANGUAGE SQL AS 'SELECT 1'",
+        "CREATE PROCEDURE p() LANGUAGE plpgsql AS 'BEGIN NULL; END'",
+    ] {
+        let (stmts, errors) = parse_with_errors(sql);
+        assert!(errors.is_empty(), "expected no parse errors for {sql:?}, got: {errors:?}");
+        assert_eq!(stmts.len(), 1, "expected one statement for {sql:?}");
     }
 }
 
@@ -9963,6 +9988,26 @@ fn test_like_like_and_chain() {
             match w {
                 Expr::BinaryOp { op, .. } => assert_eq!(op, "AND"),
                 other => panic!("expected AND at top level, got {:?}", other),
+            }
+        }
+        _ => panic!("expected Select, got {:?}", stmt),
+    }
+}
+
+#[test]
+fn test_like_pattern_keeps_concat() {
+    // The pattern binds tighter than boolean/comparison operators but must still
+    // absorb higher-precedence ones such as `||`.
+    let stmt = parse_one("SELECT v FROM t WHERE name LIKE 'a' || 'b'");
+    match stmt {
+        Statement::Select(s) => {
+            let w = s.where_clause.as_ref().expect("expected WHERE");
+            match w {
+                Expr::Like { pattern, .. } => match pattern.as_ref() {
+                    Expr::BinaryOp { op, .. } => assert_eq!(op, "||", "concat should stay inside the LIKE pattern"),
+                    other => panic!("expected || inside pattern, got {:?}", other),
+                },
+                other => panic!("expected Like at top level, got {:?}", other),
             }
         }
         _ => panic!("expected Select, got {:?}", stmt),

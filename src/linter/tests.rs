@@ -98,6 +98,46 @@ fn r005_r006_r007_inside_function_warn() {
 }
 
 #[test]
+fn r007_second_embedded_select_warns() {
+    // Every embedded SELECT must be checked, not just the first one with a WHERE.
+    let stmts = parse(
+        "CREATE FUNCTION f RETURN INTEGER IS v INTEGER;
+         BEGIN
+            SELECT v INTO v FROM t1 WHERE id = 1;
+            SELECT v INTO v FROM t2 WHERE name LIKE '%abc';
+            RETURN v;
+         END;",
+    );
+    let w = lint(&stmts);
+    assert!(has_rule(&w, "R007"), "LIKE in the second embedded SELECT should still trigger R007");
+}
+
+#[test]
+fn r006_index_aware_inside_function_warns() {
+    // Embedded SELECTs carry their own FROM list, so the index-aware R006 path
+    // can resolve the table and fire (it is skipped when tables are unknown).
+    let stmts = parse(
+        "CREATE FUNCTION f RETURN INTEGER IS v INTEGER;
+         BEGIN
+            SELECT v INTO v FROM users WHERE upper(name) = 'X';
+            RETURN v;
+         END;",
+    );
+    let mut idx_cols = std::collections::HashMap::new();
+    idx_cols.insert("idx_users_name".to_string(), vec!["name".to_string()]);
+    let mut indexes: crate::analyzer::schema::IndexMapV2 = std::collections::HashMap::new();
+    indexes.insert("users".to_string(), idx_cols);
+
+    let mut linter = SqlLinter::with_default_rules(LintConfig::default());
+    linter.set_index_info(indexes);
+    let w = linter.lint(&stmts, None, Confidence::Full);
+    assert!(
+        has_rule(&w, "R006"),
+        "index-aware R006 should fire for a function on an indexed column inside a function body"
+    );
+}
+
+#[test]
 fn r007_like_and_compound_warns() {
     // LIKE followed by AND must still trigger R007 (precedence regression guard).
     let stmts = parse("SELECT v FROM users WHERE name LIKE '%abc' AND status = 1");
@@ -1304,6 +1344,26 @@ fn s009_column_equals_literal_no_warn() {
     let stmts = parse("SELECT * FROM users WHERE status = 'A'");
     let w = lint(&stmts);
     assert!(!has_rule(&w, "S009"), "column=literal should not trigger S009");
+}
+
+#[test]
+fn s009_always_false_comparison_no_warn() {
+    // `1 <> 1` / `1 > 1` are contradictions (always false), not tautologies —
+    // S009 reports 恒真 conditions only.
+    for sql in ["SELECT * FROM t WHERE 1 <> 1", "SELECT * FROM t WHERE 1 > 1", "SELECT * FROM t WHERE 1 != 1"] {
+        let stmts = parse(sql);
+        let w = lint(&stmts);
+        assert!(!has_rule(&w, "S009"), "{sql} is always false, not tautological");
+    }
+}
+
+#[test]
+fn s009_ge_le_same_literal_warns() {
+    for sql in ["SELECT * FROM t WHERE 1 >= 1", "SELECT * FROM t WHERE 1 <= 1"] {
+        let stmts = parse(sql);
+        let w = lint(&stmts);
+        assert!(has_rule(&w, "S009"), "{sql} is always true and should trigger S009");
+    }
 }
 
 // ── R005: Schema-aware implicit type conversion ──
