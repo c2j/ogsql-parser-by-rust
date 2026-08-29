@@ -442,6 +442,45 @@ fn p009_coalesce_not_triggered() {
     assert!(!has_rule(&w, "P009"), "COALESCE should not trigger P009");
 }
 
+#[test]
+fn test_p009_nvl_coalesce() {
+    // a. NVL(status, 0) -> suggestion contains COALESCE(status, 0)
+    let stmts = parse("SELECT * FROM t WHERE NVL(status, 0) = 1");
+    let w = lint(&stmts);
+    assert!(
+        w.iter().any(|x| x.rule_id == "P009" && x.suggestion.as_deref().unwrap_or("").contains("COALESCE(status, 0)")),
+        "NVL suggestion should contain COALESCE(status, 0), got: {:?}",
+        w.iter().map(|x| x.suggestion.clone()).collect::<Vec<_>>()
+    );
+
+    // b. NVL2(status, 1, 0) -> suggestion contains CASE WHEN
+    let stmts = parse("SELECT * FROM t WHERE NVL2(status, 1, 0) = 1");
+    let w = lint(&stmts);
+    assert!(
+        w.iter().any(|x| x.rule_id == "P009" && x.suggestion.as_deref().unwrap_or("").contains("CASE WHEN")),
+        "NVL2 suggestion should contain CASE WHEN, got: {:?}",
+        w.iter().map(|x| x.suggestion.clone()).collect::<Vec<_>>()
+    );
+
+    // c. DECODE(...) -> suggestion contains CASE (unchanged)
+    let stmts = parse("SELECT * FROM t WHERE DECODE(code, 1, 'A', 'B') = 'A'");
+    let w = lint(&stmts);
+    assert!(
+        w.iter().any(|x| x.rule_id == "P009" && x.suggestion.as_deref().unwrap_or("").contains("CASE")),
+        "DECODE suggestion should contain CASE, got: {:?}",
+        w.iter().map(|x| x.suggestion.clone()).collect::<Vec<_>>()
+    );
+
+    // d. IIF(cond, a, b) -> suggestion contains CASE (unchanged)
+    let stmts = parse("SELECT * FROM t WHERE IIF(cond, 1, 0) = 1");
+    let w = lint(&stmts);
+    assert!(
+        w.iter().any(|x| x.rule_id == "P009" && x.suggestion.as_deref().unwrap_or("").contains("CASE")),
+        "IIF suggestion should contain CASE, got: {:?}",
+        w.iter().map(|x| x.suggestion.clone()).collect::<Vec<_>>()
+    );
+}
+
 // ── P010: Multi-column UPDATE from subquery ──
 
 #[test]

@@ -54,6 +54,11 @@ impl SqlFormatter {
         self.format_statement_flat(stmt)
     }
 
+    /// Render a single expression as normalized SQL text (no statement wrapper).
+    pub fn render_expr(&self, expr: &Expr) -> String {
+        self.format_expr(expr)
+    }
+
     /// Structured pretty-print for SELECT statements. Returns None for
     /// non-SELECT statements (caller falls back to flat+multiline).
     fn format_statement_pretty(&self, stmt: &Statement) -> Option<String> {

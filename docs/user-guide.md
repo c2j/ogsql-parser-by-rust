@@ -368,7 +368,49 @@ echo "SELECT id FROM users WHERE id = 1" | ogsql parse -j | ogsql json2sql
 ogsql -f ast.json json2sql
 ```
 
+#### Input JSON Schema
+
+输入格式应为 `ogsql parse -j` 的完整输出结构：`{ "statements": [...] }`。
+
+**字段说明：**
+
+- `statements`: 数组（必填），包含解析后的语句对象
+  - `statement`: 对象（必填），AST 节点根对象
+  - `sql_text`: 字符串（可选），原始 SQL 文本，用于还原时的参考
+  - `location`: 对象（可选），包含 `start_line`, `start_col`, `end_line`, `end_col` 等位置信息
+
+**JSON 示例：**
+
+```json
+{
+  "statements": [
+    {
+      "statement": {
+        "Select": {
+          "targets": [
+            {
+              "Expr": {
+                "ColumnRef": ["id"]
+              }
+            }
+          ],
+          "from": [
+            {
+              "Table": {
+                "name": ["users"]
+              }
+            }
+          ]
+        }
+      },
+      "sql_text": "SELECT id FROM users"
+    }
+  ]
+}
+```
+
 **注意：** 还原后的 SQL 在语义上与原始 SQL 等价，但格式可能不同（注释和原始大小写不会保留）。
+
 
 ---
 

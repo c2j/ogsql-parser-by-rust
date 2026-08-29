@@ -1059,7 +1059,40 @@ fn check_p022(
 
 // ── P009: Function that should be CASE ──
 
-const CASE_REPLACEABLE_FUNCTIONS: &[&str] = &["nvl", "nvl2", "decode", "iif"];
+const GENERIC_CASE_SUGGESTION: &str = "\u{4f7f}\u{7528} CASE WHEN ... THEN ... ELSE ... END \u{66ff}\u{4ee3}";
+
+/// Build a targeted replacement suggestion for `NVL`/`NVL2`/`DECODE`/`IIF` calls.
+/// Returns `None` when `lower_name` is not one of the functions P009 flags.
+fn case_replacement_suggestion(lower_name: &str, args: &[Expr]) -> Option<String> {
+    let formatter = crate::formatter::SqlFormatter::new();
+    match lower_name {
+        "nvl" => {
+            if let [a, b] = args {
+                Some(format!(
+                    "\u{4f7f}\u{7528} COALESCE({}, {}) \u{66ff}\u{4ee3}",
+                    formatter.render_expr(a),
+                    formatter.render_expr(b)
+                ))
+            } else {
+                Some(GENERIC_CASE_SUGGESTION.to_string())
+            }
+        }
+        "nvl2" => {
+            if let [cond, then_val, else_val] = args {
+                Some(format!(
+                    "\u{4f7f}\u{7528} CASE WHEN {} IS NOT NULL THEN {} ELSE {} END \u{66ff}\u{4ee3}",
+                    formatter.render_expr(cond),
+                    formatter.render_expr(then_val),
+                    formatter.render_expr(else_val)
+                ))
+            } else {
+                Some(GENERIC_CASE_SUGGESTION.to_string())
+            }
+        }
+        "decode" | "iif" => Some(GENERIC_CASE_SUGGESTION.to_string()),
+        _ => None,
+    }
+}
 
 fn check_p009(
     curr_stmt: &StatementInfo,
@@ -1073,16 +1106,16 @@ fn check_p009(
     let loc = stmt_location(curr_stmt);
     if let Some(where_clause) = extract_where(&curr_stmt.statement) {
         walk_expr(where_clause, &mut |e| {
-            if let Expr::FunctionCall { name, .. } = e {
+            if let Expr::FunctionCall { name, args, .. } = e {
                 if let Some(fn_name) = name.last() {
                     let lower = fn_name.to_lowercase();
-                    if CASE_REPLACEABLE_FUNCTIONS.contains(&lower.as_str()) {
+                    if let Some(suggestion) = case_replacement_suggestion(&lower, args) {
                         warnings.push(make_warning(
                             WarningLevel::Performance,
                             "P009",
                             "function-instead-of-case",
                             format!("\u{51fd}\u{6570} {fn_name}() \u{53ef}\u{4ee5}\u{7528} CASE \u{8868}\u{8fbe}\u{5f0f}\u{66ff}\u{4ee3}\u{ff0c}\u{53ef}\u{80fd}\u{66f4}\u{9ad8}\u{6548}"),
-                            Some("\u{4f7f}\u{7528} CASE WHEN ... THEN ... ELSE ... END \u{66ff}\u{4ee3}"),
+                            Some(&suggestion),
                             loc,
                             None,
                             confidence,
